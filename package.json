@@ -1,0 +1,9 @@
+{
+  "name": "web-gpu",
+  "version": "0.0.0",
+  "description": "WebGPU",
+  "main": "server.js",
+  "author": {
+    "name": ""
+  }
+}

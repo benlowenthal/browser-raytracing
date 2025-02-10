@@ -1,0 +1,288 @@
+struct BVHNode {
+	aabbMin: vec3f, offset: u32,
+	aabbMax: vec3f,	triCount: u32
+}
+
+struct Tri {
+	v0: u32, v1: u32, v2: u32,
+	v0n: u32, v1n: u32, v2n: u32,
+	v0t: u32, v1t: u32, v2t: u32,
+	m: u32
+}
+
+struct Material {
+	tex: u32,
+	rough: f32,
+	gloss: f32,
+	transparency: f32,
+	refIdx: f32
+}
+
+
+@group(0) @binding(0) var<uniform> dimension: vec2f;
+
+@group(0) @binding(1) var frame: texture_storage_3d<r32float, read_write>;
+
+@group(0) @binding(2) var<storage> bvh: array<BVHNode>;
+@group(0) @binding(3) var<storage> vert: array<vec3f>;
+@group(0) @binding(4) var<storage> normal: array<vec3f>;
+@group(0) @binding(5) var<storage> uvs: array<vec2f>;
+@group(0) @binding(6) var<storage> tri: array<Tri>;
+@group(0) @binding(7) var<storage> mat: array<Material>;
+
+@group(0) @binding(8) var textures: texture_2d_array<f32>;
+@group(0) @binding(9) var texSampler: sampler;
+
+@group(0) @binding(10) var<uniform> pos: vec3f;
+@group(0) @binding(11) var<uniform> rot: vec3f;
+
+
+struct Ray {
+	start: vec3f,
+	dir: vec3f
+}
+
+struct Return {
+	hit: Hit,
+	tri: Tri
+}
+
+struct Hit {
+	t: f32,
+	u: f32,
+	v: f32
+}
+
+
+fn sampleTexture(coords : vec2f, layer : u32) -> vec4f {
+	 return textureSampleLevel(textures, texSampler, vec2f(coords.x, 1-coords.y), layer, 0f);
+}
+
+fn intersectBVH(ray : Ray) -> Return {
+	var best = Hit(1e30f, 0f, 0f);
+	var hitIdx = 0u;
+
+	var stack = array<u32, 16>();
+	var head = 0i;
+	stack[head] = 0u;
+
+	while (head > -1i) {
+		let pop = bvh[stack[head]];
+		head--;
+
+		if (!intersectAABB(ray, best.t, pop.aabbMin, pop.aabbMax)) { continue; }
+
+		if (pop.triCount > 0) {
+			for (var i = pop.offset; i < pop.offset + pop.triCount; i++) {
+				let test = intersectTri(ray, tri[i]);
+				if (test.t < best.t) {
+					best = test;
+					hitIdx = i;
+				}
+			}
+		} else {
+			head++;
+			stack[head] = pop.offset;
+			head++;
+			stack[head] = pop.offset + 1;
+		}
+	}
+
+	return Return(best, tri[hitIdx]);
+}
+
+fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> bool {
+	let tx1 = (bmin.x - ray.start.x) / ray.dir.x;
+	let tx2 = (bmax.x - ray.start.x) / ray.dir.x;
+	let ty1 = (bmin.y - ray.start.y) / ray.dir.y;
+	let ty2 = (bmax.y - ray.start.y) / ray.dir.y;
+	let tz1 = (bmin.z - ray.start.z) / ray.dir.z;
+	let tz2 = (bmax.z - ray.start.z) / ray.dir.z;
+
+	let tmin = max(max(min(tx1, tx2), min(ty1, ty2)), min(tz1, tz2));
+	let tmax = min(min(max(tx1, tx2), max(ty1, ty2)), max(tz1, tz2));
+
+	return (tmax >= tmin && tmin < dist && tmax > 0f);
+}
+
+fn intersectTri(ray : Ray, tri : Tri) -> Hit {
+	let miss = Hit(1e30f, 0f, 0f);
+	let edge1 = vert[tri.v1] - vert[tri.v0];
+	let edge2 = vert[tri.v2] - vert[tri.v0];
+	let h = cross(ray.dir, edge2);
+	let a = dot(edge1, h);
+	if (a > -0.0001f && a < 0.0001f) { return miss; }
+	let f = 1 / a;
+	let s = ray.start - vert[tri.v0];
+	let u = f * dot(s, h);
+	if (u < 0f || u > 1f) { return miss; }
+	let q = cross(s, edge1);
+	let v = f * dot(ray.dir, q);
+	if (v < 0f || u + v > 1f) { return miss; }
+	let t = f * dot(edge2, q);
+	if (t > 0.0001f) { return Hit(t, u, v); }
+	return miss;
+}
+
+fn random(x: f32, y: f32) -> f32 {
+	//random float between -0.5 and 0.5
+    return fract(sin(dot(vec2f(x,y), vec2(12.9898,78.233)))*43758.5453123) - 0.5f;
+}
+
+fn lightTest(hitPnt: vec3f, lightPos: vec3f, intensity: f32, seethru: bool) -> f32 {
+	let dir = lightPos - hitPnt;
+	let lightDist = length(dir);
+	let lightRay = Ray(hitPnt, normalize(dir + random(hitPnt.x, hitPnt.z) * 0.2f));
+	let lightOut = intersectBVH(lightRay);
+	if (lightOut.hit.t > lightDist) { return intensity / lightDist; }
+
+	let hitMat = mat[lightOut.tri.m];
+	if (seethru && hitMat.transparency > 0) {
+		let hitPnt2 = lightRay.start + lightRay.dir * lightOut.hit.t;
+		let lightRay2 = Ray(hitPnt2, lightRay.dir);
+		let lightOut2 = intersectBVH(lightRay2);
+
+		if (lightOut.hit.t + lightOut2.hit.t > lightDist) { return intensity / lightDist; }
+	}
+
+	return 0;
+}
+
+@compute @workgroup_size(8,8)
+fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
+	const lightPos = vec3f(10, 8, 0);
+	const ambient = 0.2f;
+
+	let uv = vec3f(globalIdx);
+
+	let right = cross(vec3f(0, 1, 0), rot);
+	let up = cross(rot, right);
+
+	let ratio = dimension.y / dimension.x;
+	let screenPos = vec2f(uv.x/(dimension.x/2f) - 1f, (1f - uv.y/(dimension.y/2f)) * ratio);
+
+	let dir = normalize(rot + screenPos.x * right + screenPos.y * up);
+	let ray = Ray(pos, dir);
+	let out = intersectBVH(ray);
+
+	//ray missed all primitives
+	if (out.hit.t > 1e20f) {
+		let ij = vec2u(u32(uv.x), u32(uv.y));
+		textureStore(frame, vec3u(ij, 0u), vec4f(0, 0, 0, 1));
+		textureStore(frame, vec3u(ij, 1u), vec4f(0, 0, 0, 1));
+		textureStore(frame, vec3u(ij, 2u), vec4f(0, 0, 0, 1));
+		return;
+	}
+	
+	let hitPnt = ray.start + ray.dir * out.hit.t;
+	let bary = vec3f(1 - out.hit.u - out.hit.v, out.hit.u, out.hit.v);
+
+	let material = mat[out.tri.m];
+
+	let rand = vec3f(random(uv.x, uv.y), random(uv.x+1,uv.y), random(uv.x,uv.y+1));
+	let norm = normalize(normal[out.tri.v0n] * bary.x + normal[out.tri.v1n] * bary.y + normal[out.tri.v2n] * bary.z + rand * material.rough);
+	let texUV = uvs[out.tri.v0t] * bary.x + uvs[out.tri.v1t] * bary.y + uvs[out.tri.v2t] * bary.z;
+
+
+	//direct light testing
+	var light = 0f;
+	light += lightTest(hitPnt, lightPos, 4, false);
+	light += lightTest(hitPnt, lightPos, 4, false);
+	light *=  1 - material.gloss - material.transparency;
+
+
+	//object material reflects light
+	var reflColor = vec3f(0);
+	var reflLight = 0f;
+	if (material.gloss > 0) {
+		let reflDir = reflect(dir, norm);
+		let reflRay = Ray(hitPnt, normalize(reflDir));
+		let reflOut = intersectBVH(reflRay);
+
+		//reflected ray hit a primitive
+		if (reflOut.hit.t < 1e30f) {
+			let reflB = vec3f(1 - reflOut.hit.u - reflOut.hit.v, reflOut.hit.u, reflOut.hit.v);
+			let reflUV = uvs[reflOut.tri.v0t] * reflB.x + uvs[reflOut.tri.v1t] * reflB.y + uvs[reflOut.tri.v2t] * reflB.z;
+
+			let reflHitPnt = reflRay.start + reflRay.dir * reflOut.hit.t;
+			reflColor = sampleTexture(reflUV, mat[reflOut.tri.m].tex).xyz * material.gloss;
+			reflLight = lightTest(reflHitPnt, lightPos, 8, false) * material.gloss;
+		}
+	}
+
+
+	//object material refracts light
+	var refrColor = vec3f(0);
+	var refrLight = 0f;
+	if (material.transparency > 0) {
+		let refrDir = refract(dir, norm, material.refIdx);
+		let refrRay = Ray(hitPnt, normalize(refrDir));
+		let refrOut = intersectBVH(refrRay);
+		
+		//refracted ray hit a back face
+		if (refrOut.hit.t < 1e20f) {
+			let refrHitPnt = refrRay.start + refrRay.dir * refrOut.hit.t;
+			let baryr = vec3f(1 - refrOut.hit.u - refrOut.hit.v, refrOut.hit.u, refrOut.hit.v);
+			let norm2 = normal[refrOut.tri.v0n] * baryr.x + normal[refrOut.tri.v1n] * baryr.y + normal[refrOut.tri.v2n] * baryr.z;
+			let refrUV = uvs[refrOut.tri.v0t] * baryr.x + uvs[refrOut.tri.v1t] * baryr.y + uvs[refrOut.tri.v2t] * baryr.z;
+			
+			let refrMaterial = mat[refrOut.tri.m];
+			refrColor = sampleTexture(refrUV, refrMaterial.tex).xyz;
+			refrLight = lightTest(refrHitPnt, lightPos, 8, true);
+
+			if (refrMaterial.transparency > 0) {
+				let refrDir2 = refract(refrDir, norm2, 1 / material.refIdx);
+				let refrRay2 = Ray(refrHitPnt, normalize(refrDir2));
+				let refrOut2 = intersectBVH(refrRay2);
+			
+				//refracted ray hit a primitive
+				if (refrOut2.hit.t < 1e20f) {
+					let refrHitPnt2 = refrRay2.start + refrRay2.dir * refrOut2.hit.t;
+					let baryr2 = vec3f(1 - refrOut2.hit.u - refrOut2.hit.v, refrOut2.hit.u, refrOut2.hit.v);
+					let refrUV2 = uvs[refrOut2.tri.v0t] * baryr2.x + uvs[refrOut2.tri.v1t] * baryr2.y + uvs[refrOut2.tri.v2t] * baryr2.z;
+
+					let refrColor2 = sampleTexture(refrUV2, mat[refrOut2.tri.m].tex).xyz;
+					let refrLight2 = lightTest(refrHitPnt2, lightPos, 8, true);
+			
+					refrColor = mix(refrColor, refrColor2, refrMaterial.transparency);
+					refrLight = mix(refrLight, refrLight2, refrMaterial.transparency);
+				}
+			} else {
+				refrColor = mix(refrColor, vec3f(0), refrMaterial.transparency);
+				refrLight = mix(refrLight, 0, refrMaterial.transparency);
+			}
+		}
+	}
+
+
+	//combine color sources
+	var color = sampleTexture(texUV, material.tex).xyz;
+	color = mix(color, reflColor, material.gloss);
+	color = mix(color, refrColor, material.transparency);
+
+	color *= ambient + light + reflLight + refrLight;
+
+	let ij = vec2u(u32(uv.x), u32(uv.y));
+	textureStore(frame, vec3u(ij, 0u), vec4f(color.r, 0, 0, 1));
+	textureStore(frame, vec3u(ij, 1u), vec4f(color.g, 0, 0, 1));
+	textureStore(frame, vec3u(ij, 2u), vec4f(color.b, 0, 0, 1));
+}
+
+@vertex
+fn vertexMain(@location(0) pos: vec2f) -> @builtin(position) vec4f {
+	return vec4f(pos, 0, 1);
+}
+
+@fragment
+fn fragmentMain(@builtin(position) uv: vec4f) -> @location(0) vec4f {
+	let ij = vec2u(u32(uv.x), u32(uv.y));
+
+	let color = vec3f(textureLoad(frame, vec3u(ij.x, ij.y, 0u)).x, textureLoad(frame, vec3u(ij.x, ij.y, 1u)).x, textureLoad(frame, vec3u(ij.x, ij.y, 2u)).x);
+
+	let up = vec3f(textureLoad(frame, vec3u(ij.x, ij.y+1, 0u)).x, textureLoad(frame, vec3u(ij.x, ij.y+1, 1u)).x, textureLoad(frame, vec3u(ij.x, ij.y+1, 2u)).x);
+	let down = vec3f(textureLoad(frame, vec3u(ij.x, ij.y-1, 0u)).x, textureLoad(frame, vec3u(ij.x, ij.y-1, 1u)).x, textureLoad(frame, vec3u(ij.x, ij.y-1, 2u)).x);
+	let left = vec3f(textureLoad(frame, vec3u(ij.x-1, ij.y, 0u)).x, textureLoad(frame, vec3u(ij.x-1, ij.y, 1u)).x, textureLoad(frame, vec3u(ij.x-1, ij.y, 2u)).x);
+	let right = vec3f(textureLoad(frame, vec3u(ij.x+1, ij.y, 0u)).x, textureLoad(frame, vec3u(ij.x+1, ij.y, 1u)).x, textureLoad(frame, vec3u(ij.x+1, ij.y, 2u)).x);
+
+	return vec4f((4 * color + up + down + left + right) / 8, 1);
+}

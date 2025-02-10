@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Renderer</title>
+    <style>
+        canvas {
+            display: block;
+            position: fixed;
+            top: 3vh;
+            left: 0;
+            width: 100vw;
+            height: 97vh;
+        }
+        p {
+            position: absolute;
+            margin: 0px;
+            top: 0px;
+        }
+    </style>
+</head>
+<body>
+    <p style="left: 0px" id="fps"></p>
+    <p style="left: 75px" id="pos"></p>
+    <p style="left: 300px" id="rot"></p>
+    <canvas id="canvas"></canvas>
+    <script type="module" src="render.js"></script>
+</body>
+</html>
