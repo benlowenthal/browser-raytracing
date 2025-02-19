@@ -1,6 +1,6 @@
 import { Vector3, dist, mul } from "./vector3.js";
-import { bvh, triIdx } from "./bvh.js";
-import { vert, normal, uvs, tri, mat, tex } from "./environment.js";
+import { bvh, triIdx, buildBVH } from "./bvh.js";
+import { vert, normal, uvs, tri, mat, tex, buildOBJ } from "./environment.js";
 
 const canvas = document.getElementById("canvas");
 const context = canvas.getContext("webgpu");
@@ -12,6 +12,8 @@ function resizeCanvas() {
 
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
+
+buildBVH();
 
 
 //WebGPU initialize
@@ -75,131 +77,144 @@ const frame = device.createTexture({
 });
 
 
-//BVH data buffer
-const bvhData = new Float32Array(bvh.length * 8);
-const bvhDataU = new Uint32Array(bvhData.buffer);
-for (var n = 0; n < bvh.length; n++) {
-  bvhData.set([bvh[n].aabbMin.x, bvh[n].aabbMin.y, bvh[n].aabbMin.z], n * 8);
-  bvhDataU.set([bvh[n].offset], n * 8 + 3);
-  bvhData.set([bvh[n].aabbMax.x, bvh[n].aabbMax.y, bvh[n].aabbMax.z], n * 8 + 4);
-  bvhDataU.set([bvh[n].triCount], n * 8 + 7);
+var bvhBuffer;
+var vertBuffer;
+var normalBuffer;
+var uvBuffer;
+var triBuffer;
+function writeBufferData() {
+
+  //BVH data buffer
+  console.log(bvh);
+  const bvhData = new Float32Array(bvh.length * 8);
+  const bvhDataU = new Uint32Array(bvhData.buffer);
+  for (var n = 0; n < bvh.length; n++) {
+    bvhData.set([bvh[n].aabbMin.x, bvh[n].aabbMin.y, bvh[n].aabbMin.z], n * 8);
+    bvhDataU.set([bvh[n].offset], n * 8 + 3);
+    bvhData.set([bvh[n].aabbMax.x, bvh[n].aabbMax.y, bvh[n].aabbMax.z], n * 8 + 4);
+    bvhDataU.set([bvh[n].triCount], n * 8 + 7);
+  }
+
+  bvhBuffer = device.createBuffer({
+    label: "BVH Storage",
+    size: bvhData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(bvhBuffer, 0, bvhData);
+
+
+  //vertices data
+  const vertData = new Float32Array(vert.length * 4);
+  for (var n = 0; n < vert.length; n++) {
+    vertData.set([
+      vert[n].x, vert[n].y, vert[n].z, 0
+    ], n * 4);
+  }
+
+  vertBuffer = device.createBuffer({
+    label: "Vertex Storage",
+    size: vertData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(vertBuffer, 0, vertData);
+
+
+  //vertex normals data
+  const normalData = new Float32Array(normal.length * 4);
+  for (var n = 0; n < normal.length; n++) {
+    normalData.set([
+      normal[n].x, normal[n].y, normal[n].z, 0
+    ], n * 4);
+  }
+
+  normalBuffer = device.createBuffer({
+    label: "Vertex Normal Storage",
+    size: normalData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(normalBuffer, 0, normalData);
+
+
+  //vertex uv data
+  const uvData = new Float32Array(uvs);
+
+  uvBuffer = device.createBuffer({
+    label: "Vertex UVs Storage",
+    size: uvData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(uvBuffer, 0, uvData);
+
+
+  //primitives data
+  const triData = new Uint32Array(tri.length * 10);
+  for (var n = 0; n < tri.length; n++) {
+    triData.set([
+      tri[triIdx[n]].v0,
+      tri[triIdx[n]].v1,
+      tri[triIdx[n]].v2,
+      tri[triIdx[n]].v0n,
+      tri[triIdx[n]].v1n,
+      tri[triIdx[n]].v2n,
+      tri[triIdx[n]].v0t,
+      tri[triIdx[n]].v1t,
+      tri[triIdx[n]].v2t,
+      tri[triIdx[n]].mat
+    ], n * 10);
+  }
+
+  triBuffer = device.createBuffer({
+    label: "Tri Storage",
+    size: triData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(triBuffer, 0, triData);
+
 }
-console.log(bvhData);
 
-const bvhBuffer = device.createBuffer({
-  label: "BVH Storage",
-  size: bvhData.byteLength,
-  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(bvhBuffer, 0, bvhData);
+writeBufferData();
 
 
-//vertices data
-const vertData = new Float32Array(vert.length * 4);
-for (var n = 0; n < vert.length; n++) {
-  vertData.set([
-    vert[n].x, vert[n].y, vert[n].z, 0
-  ], n * 4);
+var matBuffer;
+var textures;
+async function writeMaterialData() {
+
+  //material data
+  const matData = new Float32Array(mat.length * 5);
+  const matDataU = new Uint32Array(matData);
+  for (var n = 0; n < mat.length; n++) {
+    matDataU[n * 5] = mat[n].texture;
+    matData.set([
+      mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx
+    ], n * 5 + 1);
+  }
+
+  matBuffer = device.createBuffer({
+    label: "Material Storage",
+    size: matData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(matBuffer, 0, matData);
+
+
+  //texture data
+  const SIZE = 2048;
+  textures = device.createTexture({
+    label: "Texture array",
+    size: [SIZE, SIZE, tex.length + 1],
+    format: "rgba8unorm",
+    dimension: "2d",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+  });
+
+  for (var n = 0; n < tex.length; n++) {
+    const bm = await fetch(tex[n]).then(r => r.blob()).then(r => createImageBitmap(r));
+    device.queue.copyExternalImageToTexture({ source: bm }, { texture: textures, origin: [0, 0, n] }, [SIZE, SIZE]);
+  }
+
 }
-console.log(vertData);
 
-const vertBuffer = device.createBuffer({
-  label: "Vertex Storage",
-  size: vertData.byteLength,
-  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(vertBuffer, 0, vertData);
-
-
-//vertex normals data
-const normalData = new Float32Array(normal.length * 4);
-for (var n = 0; n < normal.length; n++) {
-  normalData.set([
-    normal[n].x, normal[n].y, normal[n].z, 0
-  ], n * 4);
-}
-console.log(normalData);
-
-const normalBuffer = device.createBuffer({
-  label: "Vertex Normal Storage",
-  size: normalData.byteLength,
-  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(normalBuffer, 0, normalData);
-
-
-//vertex uv data
-const uvData = new Float32Array(uvs);
-console.log(uvData);
-
-const uvBuffer = device.createBuffer({
-  label: "Vertex UVs Storage",
-  size: uvData.byteLength,
-  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(uvBuffer, 0, uvData);
-
-
-//primitives data
-const triData = new Uint32Array(tri.length * 10);
-for (var n = 0; n < tri.length; n++) {
-  triData.set([
-    tri[triIdx[n]].v0,
-    tri[triIdx[n]].v1,
-    tri[triIdx[n]].v2,
-    tri[triIdx[n]].v0n,
-    tri[triIdx[n]].v1n,
-    tri[triIdx[n]].v2n,
-    tri[triIdx[n]].v0t,
-    tri[triIdx[n]].v1t,
-    tri[triIdx[n]].v2t,
-    tri[triIdx[n]].mat
-  ], n * 10);
-}
-console.log(triData);
-
-const triBuffer = device.createBuffer({
-  label: "Tri Storage",
-  size: triData.byteLength,
-  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(triBuffer, 0, triData);
-
-
-//material data
-const matData = new Float32Array(mat.length * 5);
-const matDataU = new Uint32Array(matData);
-for (var n = 0; n < mat.length; n++) {
-  matDataU[n * 5] = mat[n].texture;
-  matData.set([
-    mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx
-  ], n * 5 + 1);
-}
-console.log(matData);
-
-const matBuffer = device.createBuffer({
-  label: "Material Storage",
-  size: matData.byteLength,
-  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(matBuffer, 0, matData);
-
-
-//texture data
-const SIZE = 2048;
-const textures = device.createTexture({
-  label: "Texture array",
-  size: [SIZE, SIZE, tex.length + 1],
-  format: "rgba8unorm",
-  dimension: "2d",
-  usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-});
-
-for (var n = 0; n < tex.length; n++) {
-  const im = await fetch(tex[n]).then(r => r.blob());
-  const bm = await createImageBitmap(im);
-  device.queue.copyExternalImageToTexture({ source: bm }, { texture: textures, origin: [0, 0, n] }, [SIZE, SIZE]);
-}
+writeMaterialData();
 
 
 //sampler buffer
@@ -280,47 +295,54 @@ const bindGroupLayout = device.createBindGroupLayout({
   }]
 });
 
-const bindGroup = device.createBindGroup({
-  label: "Bind group",
-  layout: bindGroupLayout,
-  entries: [{
-    binding: 0,
-    resource: { buffer: wBuffer }
-  }, {
-    binding: 1,
-    resource: frame.createView()
-  }, {
-    binding: 2,
-    resource: { buffer: bvhBuffer }
-  }, {
-    binding: 3,
-    resource: { buffer: vertBuffer }
-  }, {
-    binding: 4,
-    resource: { buffer: normalBuffer }
-  }, {
-    binding: 5,
-    resource: { buffer: uvBuffer }
-  }, {
-    binding: 6,
-    resource: { buffer: triBuffer }
-  }, {
-    binding: 7,
-    resource: { buffer: matBuffer }
-  }, {
-    binding: 8,
-    resource: textures.createView()
-  }, {
-    binding: 9,
-    resource: sampler
-  }, {
-    binding: 10,
-    resource: { buffer: posBuffer }
-  }, {
-    binding: 11,
-    resource: { buffer: rotBuffer }
-  }]
-});
+var bindGroup;
+function rebindGroup() {
+
+  bindGroup = device.createBindGroup({
+    label: "Bind group",
+    layout: bindGroupLayout,
+    entries: [{
+      binding: 0,
+      resource: { buffer: wBuffer }
+    }, {
+      binding: 1,
+      resource: frame.createView()
+    }, {
+      binding: 2,
+      resource: { buffer: bvhBuffer }
+    }, {
+      binding: 3,
+      resource: { buffer: vertBuffer }
+    }, {
+      binding: 4,
+      resource: { buffer: normalBuffer }
+    }, {
+      binding: 5,
+      resource: { buffer: uvBuffer }
+    }, {
+      binding: 6,
+      resource: { buffer: triBuffer }
+    }, {
+      binding: 7,
+      resource: { buffer: matBuffer }
+    }, {
+      binding: 8,
+      resource: textures.createView()
+    }, {
+      binding: 9,
+      resource: sampler
+    }, {
+      binding: 10,
+      resource: { buffer: posBuffer }
+    }, {
+      binding: 11,
+      resource: { buffer: rotBuffer }
+    }]
+  });
+
+}
+
+rebindGroup();
 
 //pipelines + layout
 const pipelineLayout = device.createPipelineLayout({
@@ -394,22 +416,36 @@ var theta = 0;
 var delta = 0;
 var dragging = false;
 var dragStart;
-canvas.addEventListener("mousedown", function (event) {
+canvas.addEventListener("mousedown", event => {
   dragging = true;
   dragStart = event.pageX;
 });
-canvas.addEventListener("mousemove", function (event) {
+canvas.addEventListener("mousemove", event => {
   if (dragging) delta = event.pageX - dragStart;
 });
-canvas.addEventListener("mouseup", function (event) {
+canvas.addEventListener("mouseup", () => {
   dragging = false;
   theta += delta;
   delta = 0;
 });
 
 
-for (var i = 0; i < 200; i++) {
-  var time = Date.now();
+document.getElementById("button").addEventListener("click", async () => {
+  var inp = document.getElementById("input").files[0];
+  if (inp != null) {
+    //rewrite buffers after file reading finished
+    await buildOBJ(inp).then(() => {
+      buildBVH();
+      writeBufferData();
+      rebindGroup();
+    });
+  }
+});
+
+
+const MIN_FRAME_TIME = 1000 / 60; //60 fps max
+while (true) {
+  var frameStart = Date.now();
 
   pos.x = distance * Math.sin((theta + delta) / 100);
   pos.z = distance * Math.cos((theta + delta) / 100);
@@ -421,7 +457,13 @@ for (var i = 0; i < 200; i++) {
 
   await device.queue.onSubmittedWorkDone();
 
-  fpsLabel.innerHTML = Math.round(10000 / (Date.now() - time)) / 10 + " fps";
+  var frameTime = Date.now() - frameStart;
+  if (frameTime < MIN_FRAME_TIME) {
+    await new Promise(r => setTimeout(r, MIN_FRAME_TIME - frameTime));
+    frameTime = MIN_FRAME_TIME;
+  }
+
+  fpsLabel.innerHTML = Math.round(10000 / frameTime) / 10 + " fps";
   posLabel.innerHTML = "Camera position: " + Math.round(100 * pos.x) / 100 + ", " + Math.round(100 * pos.y) / 100 + ", " + Math.round(100 * pos.z) / 100;
   rotLabel.innerHTML = "Camera rotation: " + Math.round(100 * rot.x) / 100 + ", " + Math.round(100 * rot.y) / 100 + ", " + Math.round(100 * rot.z) / 100;
 }

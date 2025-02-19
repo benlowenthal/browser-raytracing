@@ -4,7 +4,6 @@ var fs = require("fs");
 
 var page = fs.readFileSync("main.html");
 var shader = fs.readFileSync("shader.txt");
-var obj = fs.readFileSync("old-rusty-car/old-rusty-car.obj");
 var port = process.env.PORT || 1337;
 
 http.createServer(function (req, res) {
@@ -19,12 +18,6 @@ http.createServer(function (req, res) {
     if (req.url === "/shader.txt") {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end(shader);
-    }
-
-    //obj file
-    if (req.url === "/teddy.obj") {
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end(obj);
     }
 
     //any texture file
