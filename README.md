@@ -5,3 +5,7 @@ Hardware-accelerated .obj renderer in your browser.
 - Loads vertex data/normals/uvs from .obj file
 - Accurate reflection/refraction
 - PBR-adjacent materials
+
+Drag the mouse to move the view around your object.
+
+Requires the Node.js server to run on HTTPS to avoid issues with CORS. With Chrome you can use the flag #unsafely-treat-insecure-origin-as-secure on localhost servers to bypass this temporarily.
