@@ -4,6 +4,7 @@ var fs = require("fs");
 
 var page = fs.readFileSync("main.html");
 var shader = fs.readFileSync("shader.txt");
+var image = fs.readFileSync("missing.jpg");
 var port = process.env.PORT || 1337;
 
 http.createServer(function (req, res) {
@@ -20,11 +21,9 @@ http.createServer(function (req, res) {
       res.end(shader);
     }
 
-    //any texture file
-    if (req.url.endsWith(".png")) {
-      var name = req.url.substr(1);
-      var image = fs.readFileSync(name);
-      res.writeHead(200, { "Content-Type": "image/png" });
+    //missing texture file
+    if (req.url === "/missing.jpg") {
+      res.writeHead(200, { "Content-Type": "image/jpg" });
       res.end(image);
     }
 

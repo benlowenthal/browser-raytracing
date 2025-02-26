@@ -11,7 +11,7 @@ struct Tri {
 }
 
 struct Material {
-	tex: u32,
+	tex: f32,
 	rough: f32,
 	gloss: f32,
 	transparency: f32,
@@ -54,8 +54,8 @@ struct Hit {
 }
 
 
-fn sampleTexture(coords : vec2f, layer : u32) -> vec4f {
-	 return textureSampleLevel(textures, texSampler, vec2f(coords.x, 1-coords.y), layer, 0f);
+fn sampleTexture(coords : vec2f, layer : f32) -> vec3f {
+	return textureSampleLevel(textures, texSampler, vec2f(coords.x, 1-coords.y), u32(layer), 0f).xyz;
 }
 
 fn intersectBVH(ray : Ray) -> Return {
@@ -70,8 +70,6 @@ fn intersectBVH(ray : Ray) -> Return {
 		let pop = bvh[stack[head]];
 		head--;
 
-		if (!intersectAABB(ray, best.t, pop.aabbMin, pop.aabbMax)) { continue; }
-
 		if (pop.triCount > 0) {
 			for (var i = pop.offset; i < pop.offset + pop.triCount; i++) {
 				let test = intersectTri(ray, tri[i]);
@@ -81,17 +79,33 @@ fn intersectBVH(ray : Ray) -> Return {
 				}
 			}
 		} else {
-			head++;
-			stack[head] = pop.offset;
-			head++;
-			stack[head] = pop.offset + 1;
+			let dist1 = intersectAABB(ray, best.t, bvh[pop.offset].aabbMin, bvh[pop.offset].aabbMax);
+			let dist2 = intersectAABB(ray, best.t, bvh[pop.offset+1].aabbMin, bvh[pop.offset+1].aabbMax);
+
+			if (dist1 < dist2) {
+				if (dist2 < 1e30f) {
+					head++;
+					stack[head] = pop.offset + 1;
+				}
+				head++;
+				stack[head] = pop.offset;
+			} else {
+				if (dist1 < 1e30f) {
+					head++;
+					stack[head] = pop.offset;
+				}
+				if (dist2 < 1e30f) {
+					head++;
+					stack[head] = pop.offset + 1;
+				}
+			}
 		}
 	}
 
 	return Return(best, tri[hitIdx]);
 }
 
-fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> bool {
+fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> f32 {
 	let tx1 = (bmin.x - ray.start.x) / ray.dir.x;
 	let tx2 = (bmax.x - ray.start.x) / ray.dir.x;
 	let ty1 = (bmin.y - ray.start.y) / ray.dir.y;
@@ -102,7 +116,8 @@ fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> bool {
 	let tmin = max(max(min(tx1, tx2), min(ty1, ty2)), min(tz1, tz2));
 	let tmax = min(min(max(tx1, tx2), max(ty1, ty2)), max(tz1, tz2));
 
-	return (tmax >= tmin && tmin < dist && tmax > 0f);
+	if (tmax >= tmin && tmin < dist && tmax > 0f) { return tmin; }
+	return 1e30f;
 }
 
 fn intersectTri(ray : Ray, tri : Tri) -> Hit {
@@ -150,13 +165,13 @@ fn lightTest(hitPnt: vec3f, lightPos: vec3f, intensity: f32, seethru: bool) -> f
 
 @compute @workgroup_size(8,8)
 fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
-	const lightPos = vec3f(10, 8, 0);
+	const lightPos = vec3f(0, -5, 0);
 	const ambient = 0.2f;
 
 	let uv = vec3f(globalIdx);
 
-	let right = cross(vec3f(0, 1, 0), rot);
-	let up = cross(rot, right);
+	let right = normalize(cross(vec3f(0, 1, 0), rot));
+	let up = normalize(cross(rot, right));
 
 	let ratio = dimension.y / dimension.x;
 	let screenPos = vec2f(uv.x/(dimension.x/2f) - 1f, (1f - uv.y/(dimension.y/2f)) * ratio);
@@ -205,7 +220,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 			let reflUV = uvs[reflOut.tri.v0t] * reflB.x + uvs[reflOut.tri.v1t] * reflB.y + uvs[reflOut.tri.v2t] * reflB.z;
 
 			let reflHitPnt = reflRay.start + reflRay.dir * reflOut.hit.t;
-			reflColor = sampleTexture(reflUV, mat[reflOut.tri.m].tex).xyz * material.gloss;
+			reflColor = sampleTexture(reflUV, mat[reflOut.tri.m].tex) * material.gloss;
 			reflLight = lightTest(reflHitPnt, lightPos, 8, false) * material.gloss;
 		}
 	}
@@ -227,7 +242,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 			let refrUV = uvs[refrOut.tri.v0t] * baryr.x + uvs[refrOut.tri.v1t] * baryr.y + uvs[refrOut.tri.v2t] * baryr.z;
 			
 			let refrMaterial = mat[refrOut.tri.m];
-			refrColor = sampleTexture(refrUV, refrMaterial.tex).xyz;
+			refrColor = sampleTexture(refrUV, refrMaterial.tex);
 			refrLight = lightTest(refrHitPnt, lightPos, 8, true);
 
 			if (refrMaterial.transparency > 0) {
@@ -241,7 +256,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 					let baryr2 = vec3f(1 - refrOut2.hit.u - refrOut2.hit.v, refrOut2.hit.u, refrOut2.hit.v);
 					let refrUV2 = uvs[refrOut2.tri.v0t] * baryr2.x + uvs[refrOut2.tri.v1t] * baryr2.y + uvs[refrOut2.tri.v2t] * baryr2.z;
 
-					let refrColor2 = sampleTexture(refrUV2, mat[refrOut2.tri.m].tex).xyz;
+					let refrColor2 = sampleTexture(refrUV2, mat[refrOut2.tri.m].tex);
 					let refrLight2 = lightTest(refrHitPnt2, lightPos, 8, true);
 			
 					refrColor = mix(refrColor, refrColor2, refrMaterial.transparency);
@@ -256,7 +271,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 
 
 	//combine color sources
-	var color = sampleTexture(texUV, material.tex).xyz;
+	var color = sampleTexture(texUV, material.tex);
 	color = mix(color, reflColor, material.gloss);
 	color = mix(color, refrColor, material.transparency);
 

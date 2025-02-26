@@ -31,7 +31,8 @@ export function buildBVH() {
   bvh[0] = new BVHNode(vec0, vec0, 0, tri.length);
   updateBounds(0);
   subdivide(0);
-  console.log("BVH built");
+
+  console.log("BVH built: " + bvh.length + " nodes");
 }
 
 function updateBounds(idx) {
@@ -60,18 +61,21 @@ function subdivide(idx) {
   const node = bvh[idx];
   if (node.triCount <= 2) return;
 
-  // determine split with SAH
+  // determine split with SAH bins
+  const SPLITS = 4;
   var bestAxis = -1;
   var bestPos = 0;
   var bestCost = 1e30;
-  for (var i = 0; i < node.triCount; i++) for (var ax = 0; ax < 3; ax++)
-  {
-    const pos = getAxis(centr[triIdx[node.offset + i]], ax);
-    const cost = heuristic(idx, ax, pos);
-    if (cost < bestCost) {
-      bestPos = pos;
-      bestAxis = ax;
-      bestCost = cost;
+  for (var i = 1; i < SPLITS; i++) {
+    const interval = add(node.aabbMin, mul(sub(node.aabbMax, node.aabbMin), i / SPLITS));
+    for (var ax = 0; ax < 3; ax++) {
+      const pos = getAxis(interval, ax);
+      const cost = heuristic(idx, ax, pos);
+      if (cost < bestCost) {
+        bestPos = pos;
+        bestAxis = ax;
+        bestCost = cost;
+      }
     }
   }
   const axis = bestAxis;

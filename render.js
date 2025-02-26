@@ -1,6 +1,6 @@
 import { Vector3, dist, mul } from "./vector3.js";
 import { bvh, triIdx, buildBVH } from "./bvh.js";
-import { vert, normal, uvs, tri, mat, tex, buildOBJ } from "./environment.js";
+import { vert, normal, uvs, tri, mat, tex, buildOBJ, readMTL, readTexture } from "./environment.js";
 
 const canvas = document.getElementById("canvas");
 const context = canvas.getContext("webgpu");
@@ -84,8 +84,7 @@ var uvBuffer;
 var triBuffer;
 function writeBufferData() {
 
-  //BVH data buffer
-  console.log(bvh);
+  //BVH data buffers
   const bvhData = new Float32Array(bvh.length * 8);
   const bvhDataU = new Uint32Array(bvhData.buffer);
   for (var n = 0; n < bvh.length; n++) {
@@ -176,17 +175,14 @@ writeBufferData();
 
 
 var matBuffer;
-var textures;
-async function writeMaterialData() {
+function writeMaterialData() {
 
   //material data
   const matData = new Float32Array(mat.length * 5);
-  const matDataU = new Uint32Array(matData);
   for (var n = 0; n < mat.length; n++) {
-    matDataU[n * 5] = mat[n].texture;
     matData.set([
-      mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx
-    ], n * 5 + 1);
+      mat[n].texture, mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx
+    ], n * 5);
   }
 
   matBuffer = device.createBuffer({
@@ -196,25 +192,34 @@ async function writeMaterialData() {
   });
   device.queue.writeBuffer(matBuffer, 0, matData);
 
+}
+
+writeMaterialData();
+
+
+var textures;
+async function writeTextureData() {
 
   //texture data
   const SIZE = 2048;
   textures = device.createTexture({
     label: "Texture array",
-    size: [SIZE, SIZE, tex.length + 1],
+    size: [SIZE, SIZE, Math.max(tex.length, 2)],
     format: "rgba8unorm",
     dimension: "2d",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
   });
 
   for (var n = 0; n < tex.length; n++) {
-    const bm = await fetch(tex[n]).then(r => r.blob()).then(r => createImageBitmap(r));
-    device.queue.copyExternalImageToTexture({ source: bm }, { texture: textures, origin: [0, 0, n] }, [SIZE, SIZE]);
+    const bm = await createImageBitmap(tex[n], { resizeHeight: SIZE, resizeWidth: SIZE, resizeQuality: "high" });
+    device.queue.copyExternalImageToTexture({ source: bm }, { texture: textures, origin: [0, 0, n] }, [SIZE, SIZE, 1]);
   }
+
+  console.log(textures);
 
 }
 
-writeMaterialData();
+writeTextureData();
 
 
 //sampler buffer
@@ -409,37 +414,70 @@ const rotLabel = document.getElementById("rot");
 
 
 var distance = 20;
-var pos = new Vector3(0, 1, -distance);
-var rot = new Vector3(0, 0, 1);
+var pos = new Vector3(0, 0, 0);
+var rot = new Vector3(0, 0, 0);
 
-var theta = 0;
-var delta = 0;
+var thetaX = 0;
+var deltaX = 0;
+var thetaY = -100;
+var deltaY = 0;
 var dragging = false;
-var dragStart;
+var dragStartX;
+var dragStartY;
 canvas.addEventListener("mousedown", event => {
   dragging = true;
-  dragStart = event.pageX;
+  dragStartX = event.pageX;
+  dragStartY = event.pageY;
 });
 canvas.addEventListener("mousemove", event => {
-  if (dragging) delta = event.pageX - dragStart;
+  if (dragging) {
+    deltaX = event.pageX - dragStartX;
+    deltaY = event.pageY - dragStartY;
+  }
 });
 canvas.addEventListener("mouseup", () => {
   dragging = false;
-  theta += delta;
-  delta = 0;
+  thetaX += deltaX;
+  thetaY += deltaY;
+  deltaX = 0;
+  deltaY = 0;
 });
+canvas.addEventListener("wheel", event => {
+  if (event.deltaY > 0) distance *= 1.1;
+  else if (event.deltaY < 0) distance /= 1.1;
+  distance = Math.max(distance, 0.1);
+})
 
 
 document.getElementById("button").addEventListener("click", async () => {
-  var inp = document.getElementById("input").files[0];
-  if (inp != null) {
-    //rewrite buffers after file reading finished
-    await buildOBJ(inp).then(() => {
-      buildBVH();
-      writeBufferData();
-      rebindGroup();
-    });
+  document.getElementById("button").disabled = true;
+
+  //analyse uploaded files
+  for (const f of document.getElementById("input").files) if (f.name.endsWith(".png") || f.name.endsWith(".jpg") || f.name.endsWith(".jpeg")) {
+    console.log(f);
+    readTexture(f);
   }
+
+  for (const f of document.getElementById("input").files) if (f.name.endsWith(".mtl")) {
+    console.log(f);
+    await readMTL(f);
+  }
+
+  for (const f of document.getElementById("input").files) if (f.name.endsWith(".obj")) {
+    console.log(f);
+    await buildOBJ(f);
+    buildBVH();
+  }
+
+  //rewrite buffers
+  await writeTextureData();
+  writeMaterialData();
+  writeBufferData();
+
+  //rebind buffers (size change)
+  rebindGroup();
+
+  document.getElementById("button").disabled = false;
 });
 
 
@@ -447,8 +485,10 @@ const MIN_FRAME_TIME = 1000 / 60; //60 fps max
 while (true) {
   var frameStart = Date.now();
 
-  pos.x = distance * Math.sin((theta + delta) / 100);
-  pos.z = distance * Math.cos((theta + delta) / 100);
+  pos.x = distance * Math.sin((thetaY + deltaY) / 100) * Math.sin((thetaX + deltaX) / 100);
+  pos.y = distance * Math.cos((thetaY + deltaY) / 100);
+  pos.z = distance * Math.sin((thetaY + deltaY) / 100) * Math.cos((thetaX + deltaX) / 100);
+
   rot = mul(new Vector3(-pos.x, -pos.y, -pos.z), 1 / dist(pos));
 
   device.queue.writeBuffer(posBuffer, 0, new Float32Array([pos.x, pos.y, pos.z]));
