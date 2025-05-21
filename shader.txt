@@ -36,6 +36,8 @@ struct Material {
 @group(0) @binding(10) var<uniform> pos: vec3f;
 @group(0) @binding(11) var<uniform> rot: vec3f;
 
+@group(0) @binding(12) var<uniform> lightPos: vec3f;
+
 
 struct Ray {
 	start: vec3f,
@@ -144,7 +146,7 @@ fn random(x: f32, y: f32) -> f32 {
     return fract(sin(dot(vec2f(x,y), vec2(12.9898,78.233)))*43758.5453123) - 0.5f;
 }
 
-fn lightTest(hitPnt: vec3f, lightPos: vec3f, intensity: f32, seethru: bool) -> f32 {
+fn lightTest(hitPnt: vec3f, intensity: f32, seethru: bool) -> f32 {
 	let dir = lightPos - hitPnt;
 	let lightDist = length(dir);
 	let lightRay = Ray(hitPnt, normalize(dir + random(hitPnt.x, hitPnt.z) * 0.2f));
@@ -165,7 +167,6 @@ fn lightTest(hitPnt: vec3f, lightPos: vec3f, intensity: f32, seethru: bool) -> f
 
 @compute @workgroup_size(8,8)
 fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
-	const lightPos = vec3f(0, -5, 0);
 	const ambient = 0.2f;
 
 	let uv = vec3f(globalIdx);
@@ -201,8 +202,8 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 
 	//direct light testing
 	var light = 0f;
-	light += lightTest(hitPnt, lightPos, 4, false);
-	light += lightTest(hitPnt, lightPos, 4, false);
+	light += lightTest(hitPnt, 4, false);
+	light += lightTest(hitPnt, 4, false);
 	light *=  1 - material.gloss - material.transparency;
 
 
@@ -221,7 +222,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 
 			let reflHitPnt = reflRay.start + reflRay.dir * reflOut.hit.t;
 			reflColor = sampleTexture(reflUV, mat[reflOut.tri.m].tex) * material.gloss;
-			reflLight = lightTest(reflHitPnt, lightPos, 8, false) * material.gloss;
+			reflLight = lightTest(reflHitPnt, 8, false) * material.gloss;
 		}
 	}
 
@@ -243,7 +244,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 			
 			let refrMaterial = mat[refrOut.tri.m];
 			refrColor = sampleTexture(refrUV, refrMaterial.tex);
-			refrLight = lightTest(refrHitPnt, lightPos, 8, true);
+			refrLight = lightTest(refrHitPnt, 8, true);
 
 			if (refrMaterial.transparency > 0) {
 				let refrDir2 = refract(refrDir, norm2, 1 / material.refIdx);
@@ -257,7 +258,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 					let refrUV2 = uvs[refrOut2.tri.v0t] * baryr2.x + uvs[refrOut2.tri.v1t] * baryr2.y + uvs[refrOut2.tri.v2t] * baryr2.z;
 
 					let refrColor2 = sampleTexture(refrUV2, mat[refrOut2.tri.m].tex);
-					let refrLight2 = lightTest(refrHitPnt2, lightPos, 8, true);
+					let refrLight2 = lightTest(refrHitPnt2, 8, true);
 			
 					refrColor = mix(refrColor, refrColor2, refrMaterial.transparency);
 					refrLight = mix(refrLight, refrLight2, refrMaterial.transparency);

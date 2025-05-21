@@ -30,7 +30,12 @@
     <p style="left: 75px" id="pos"></p>
     <p style="left: 300px" id="rot"></p>
     <input style="left: 550px" type="file" id="input" webkitdirectory directory multiple />
-    <input style="left: 750px" type="button" value="Import .obj" id="button" />
+    <input style="left: 750px" type="button" value="Import .obj" id="importButton" />
+
+    <input style="left: 850px; width: 40px" type="text" inputmode="numeric" value="0" id="lightX" />
+    <input style="left: 900px; width: 40px" type="text" inputmode="numeric" value="0" id="lightY" />
+    <input style="left: 950px; width: 40px" type="text" inputmode="numeric" value="0" id="lightZ" />
+    <input style="left: 1000px" type="button" value="Move light" id="lightButton" />
 
     <canvas id="canvas"></canvas>
     <script type="module" src="render.js"></script>

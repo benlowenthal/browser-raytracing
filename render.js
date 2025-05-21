@@ -238,6 +238,13 @@ const rotBuffer = device.createBuffer({
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
+//light position
+const lightBuffer = device.createBuffer({
+  label: "Light Position Buffer",
+  size: 3 * 4,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+
 
 //shader module
 const shaderModule = device.createShaderModule({
@@ -297,6 +304,10 @@ const bindGroupLayout = device.createBindGroupLayout({
     binding: 11,
     visibility: GPUShaderStage.COMPUTE,
     buffer: {}
+  }, {
+    binding: 12,
+    visibility: GPUShaderStage.COMPUTE,
+    buffer: {}
   }]
 });
 
@@ -342,6 +353,9 @@ function rebindGroup() {
     }, {
       binding: 11,
       resource: { buffer: rotBuffer }
+    }, {
+      binding: 12,
+      resource: { buffer: lightBuffer }
     }]
   });
 
@@ -417,6 +431,9 @@ var distance = 20;
 var pos = new Vector3(0, 0, 0);
 var rot = new Vector3(0, 0, 0);
 
+
+// CAMERA CONTROLS
+
 var thetaX = 0;
 var deltaX = 0;
 var thetaY = -100;
@@ -446,11 +463,16 @@ canvas.addEventListener("wheel", event => {
   if (event.deltaY > 0) distance *= 1.1;
   else if (event.deltaY < 0) distance /= 1.1;
   distance = Math.max(distance, 0.1);
-})
+});
 
 
-document.getElementById("button").addEventListener("click", async () => {
-  document.getElementById("button").disabled = true;
+// BUTTON EVENTS
+
+const importButton = document.getElementById("importButton");
+const lightButton = document.getElementById("lightButton");
+
+importButton.addEventListener("click", async () => {
+  importButton.disabled = true;
 
   //analyse uploaded files
   for (const f of document.getElementById("input").files) if (f.name.endsWith(".png") || f.name.endsWith(".jpg") || f.name.endsWith(".jpeg")) {
@@ -477,9 +499,19 @@ document.getElementById("button").addEventListener("click", async () => {
   //rebind buffers (size change)
   rebindGroup();
 
-  document.getElementById("button").disabled = false;
+  importButton.disabled = false;
 });
 
+lightButton.addEventListener("click", () => {
+  device.queue.writeBuffer(lightBuffer, 0, new Float32Array([
+    document.getElementById("lightX").value,
+    document.getElementById("lightY").value,
+    document.getElementById("lightZ").value
+  ]));
+});
+
+
+// RENDERING LOOP
 
 const MIN_FRAME_TIME = 1000 / 60; //60 fps max
 while (true) {
