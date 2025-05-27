@@ -1,33 +1,6 @@
 import { Vector3 } from "./vector3.js";
 
-class Tri {
-  constructor(a,b,c,i,j,k,x,y,z,m) {
-    this.v0 = a;
-    this.v1 = b;
-    this.v2 = c;
-    this.v0n = i;
-    this.v1n = j;
-    this.v2n = k;
-    this.v0t = x;
-    this.v1t = y;
-    this.v2t = z;
-    this.mat = m;
-  }
-}
-
-class Material {
-  constructor(name, t, r, gl, tr, rIdx) {
-    this.name = name;
-    this.texture = t;
-    this.rough = r;
-    this.gloss = gl;
-    this.transparency = tr;
-    this.rIdx = rIdx;
-  }
-}
-
-
-export const vert = new Array(
+export const vert = [
   new Vector3(-20, 0, -20),
   new Vector3(-20, 0, 0),
   new Vector3(-20, 0, 20),
@@ -37,29 +10,29 @@ export const vert = new Array(
   new Vector3(20, 0, -20),
   new Vector3(20, 0, 0),
   new Vector3(20, 0, 20),
-);
+];
 
-export const normal = new Array(
+export const normal = [
   new Vector3(0, 1, 0)
-);
+];
 
-export const uvs = new Array(
+export const uvs = [
   0.01, 0.01
-);
+];
 
-export const tri = new Array(
-  new Tri(0, 1, 3, 0, 0, 0, 0, 0, 0, 0),
-  new Tri(1, 4, 3, 0, 0, 0, 0, 0, 0, 0),
-  new Tri(1, 2, 4, 0, 0, 0, 0, 0, 0, 0),
-  new Tri(2, 5, 4, 0, 0, 0, 0, 0, 0, 0),
-  new Tri(3, 4, 6, 0, 0, 0, 0, 0, 0, 0),
-  new Tri(4, 7, 6, 0, 0, 0, 0, 0, 0, 0),
-  new Tri(4, 5, 7, 0, 0, 0, 0, 0, 0, 0),
-  new Tri(5, 8, 7, 0, 0, 0, 0, 0, 0, 0)
-);
+export const tri = [
+  { v0: 0, v1: 1, v2: 3, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 },
+  { v0: 1, v1: 4, v2: 3, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 },
+  { v0: 1, v1: 2, v2: 4, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 },
+  { v0: 2, v1: 5, v2: 4, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 },
+  { v0: 3, v1: 4, v2: 6, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 },
+  { v0: 4, v1: 7, v2: 6, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 },
+  { v0: 4, v1: 5, v2: 7, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 },
+  { v0: 5, v1: 8, v2: 7, v0n: 0, v1n: 0, v2n: 0, v0t: 0, v1t: 0, v2t: 0, mat: 0 }
+];
 
 export const mat = [
-  new Material("default", 0, 0, 0.7, 0, 1)
+  { name: "default", texture: 0, rough: 0, gloss: 0.7, transparency: 0, rIdx: 1 }
 ];
 
 export const tex = [await fetch("missing.jpg").then(r => r.blob())];
@@ -67,8 +40,6 @@ export const tex = [await fetch("missing.jpg").then(r => r.blob())];
 
 export async function buildOBJ(blob) {
   console.time("OBJ parsing");
-
-  const txt = await blob.text().then(r => r.split("\n"));
 
   const vertOff = vert.length;
   const normOff = normal.length;
@@ -80,41 +51,59 @@ export async function buildOBJ(blob) {
   let matIdx = 0;
 
 
-  //fill arrays with data
-  for (const line of txt) {
-    var sp = line.trim().split(/\s+/);
+  // STRANGE CUSTOM STREAM MAGIC
 
-    if (sp[0] == "usemtl") matIdx = matMap.get(sp[1]) ?? 0;
+  const decoder = new TextDecoder("utf-8");
+  const reader = blob.stream().getReader();
+  let { done, value } = await reader.read();
+  let buffer = "";
 
-    else if (sp[0] == "v") vert.push( new Vector3(parseFloat(sp[1]), parseFloat(sp[2]), -parseFloat(sp[3])) );
-    else if (sp[0] == "vn") normal.push( new Vector3(parseFloat(sp[1]), parseFloat(sp[2]), parseFloat(sp[3])) );
-    else if (sp[0] == "vt") {
-      uvs.push( parseFloat(sp[1]) );
-      uvs.push( parseFloat(sp[2]) );
-    }
+  while (!done) {
+    //expand buffer with next read chunk
+    buffer += decoder.decode(value, { stream: true });
 
-    else if (sp[0] == "f") {
-      var v0 = sp[1].split("/");
-      var v1 = sp[2].split("/");
-      var v2 = sp[3].split("/");
-      tri.push( new Tri(
-        parseInt(v0[0]) - 1 + vertOff, parseInt(v1[0]) - 1 + vertOff, parseInt(v2[0]) - 1 + vertOff,
-        parseInt(v0[2]) - 1 + normOff, parseInt(v1[2]) - 1 + normOff, parseInt(v2[2]) - 1 + normOff,
-        parseInt(v0[1]) - 1 + uvOff, parseInt(v1[1]) - 1 + uvOff, parseInt(v2[1]) - 1 + uvOff,
-        matIdx
-      ) );
+    let lines = buffer.split(/\r?\n/);
+    buffer = lines.pop(); //last line left in buffer
 
-      //split quad into 2 tris
-      if (sp.length > 4) {
-        var v3 = sp[4].split("/");
-        tri.push( new Tri(
-          parseInt(v0[0]) - 1 + vertOff, parseInt(v2[0]) - 1 + vertOff, parseInt(v3[0]) - 1 + vertOff,
-          parseInt(v0[2]) - 1 + normOff, parseInt(v2[2]) - 1 + normOff, parseInt(v3[2]) - 1 + normOff,
-          parseInt(v0[1]) - 1 + uvOff, parseInt(v2[1]) - 1 + uvOff, parseInt(v3[1]) - 1 + uvOff,
-          matIdx
-        ) );
+    //fill arrays with data
+    for (const line of lines) {
+      var sp = line.trim().split(/\s+/);
+
+      if (sp[0] == "usemtl") matIdx = matMap.get(sp[1]) ?? 0;
+
+      else if (sp[0] == "v") vert.push(new Vector3(parseFloat(sp[1]), parseFloat(sp[2]), -parseFloat(sp[3])));
+      else if (sp[0] == "vn") normal.push(new Vector3(parseFloat(sp[1]), parseFloat(sp[2]), parseFloat(sp[3])));
+      else if (sp[0] == "vt") {
+        uvs.push(parseFloat(sp[1]));
+        uvs.push(parseFloat(sp[2]));
+      }
+
+      else if (sp[0] == "f") {
+        var v0 = sp[1].split(/\//);
+        var v1 = sp[2].split(/\//);
+        var v2 = sp[3].split(/\//);
+        tri.push({
+          v0: parseInt(v0[0]) - 1 + vertOff,  v1: parseInt(v1[0]) - 1 + vertOff,  v2: parseInt(v2[0]) - 1 + vertOff,
+          v0n: parseInt(v0[2]) - 1 + normOff, v1n: parseInt(v1[2]) - 1 + normOff, v2n: parseInt(v2[2]) - 1 + normOff,
+          v0t: parseInt(v0[1]) - 1 + uvOff,   v1t: parseInt(v1[1]) - 1 + uvOff,   v2t: parseInt(v2[1]) - 1 + uvOff,
+          mat: matIdx
+        });
+
+        //split quad into 2 tris
+        if (sp.length > 4) {
+          var v3 = sp[4].split(/\//);
+          tri.push({
+            v0: parseInt(v0[0]) - 1 + vertOff,  v1: parseInt(v2[0]) - 1 + vertOff,  v2: parseInt(v3[0]) - 1 + vertOff,
+            v0n: parseInt(v0[2]) - 1 + normOff, v1n: parseInt(v2[2]) - 1 + normOff, v2n: parseInt(v3[2]) - 1 + normOff,
+            v0t: parseInt(v0[1]) - 1 + uvOff,   v1t: parseInt(v2[1]) - 1 + uvOff,   v2t: parseInt(v3[1]) - 1 + uvOff,
+            mat: matIdx
+          });
+        }
       }
     }
+
+    //read next line
+    ({ done, value } = await reader.read());
   }
 
   console.timeEnd("OBJ parsing");
@@ -125,12 +114,13 @@ export async function buildOBJ(blob) {
 export async function readMTL(blob) {
   console.time("MTL parsing");
 
-  const txt = await blob.text().then(r => r.split("\n"));
+  const txt = await blob.text().then(r => r.split(/\r?\n/));
   var matIdx = 0;
 
-  for (var i = 0; i < txt.length; i++) {
-    var sp = txt[i].trim().split(/\s+/);
-    if (sp[0] == "newmtl") matIdx = mat.push(new Material(sp[1].trim(), 0, 0, 0, 0, 1)) - 1;
+  for (const line of txt) {
+    var sp = line.trim().split(/\s+/);
+    if (sp[0] == "newmtl") matIdx = mat.push({ name: sp[1].trim(), texture: 0, rough: 0, gloss: 0, transparency: 0, rIdx: 1 }) - 1;
+
     else if (sp[0] == "map_Kd") {
       var existing = false;
 
