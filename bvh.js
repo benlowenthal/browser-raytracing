@@ -1,16 +1,6 @@
 import { Vector3, add, sub, mul } from "./vector3.js";
 import { vert, tri } from "./environment.js";
 
-class BVHNode {
-  constructor(mi, ma, off, count) {
-    this.aabbMin = mi;
-    this.aabbMax = ma;
-    this.offset = off;
-    this.triCount = count;
-  }
-}
-
-
 export var bvh = [];
 export var triIdx = [];
 
@@ -21,36 +11,37 @@ export function buildBVH() {
   nodesUsed = 1;
 
   //generate tri indices + centroids + aabbs
-  triIdx = [];
-  const centr = [];
-  const triMin = [];
-  const triMax = [];
+  triIdx = new Array(tri.length);
+  const centr = new Array(tri.length);
+  const triMin = new Array(tri.length);
+  const triMax = new Array(tri.length);
   for (var i = 0; i < tri.length; i++) {
-    triIdx.push(i);
-    centr.push(mul(add(add(vert[tri[i].v0], vert[tri[i].v1]), vert[tri[i].v2]), 0.3333));
+    triIdx[i] = i;
 
-    //precompute triangle bounds
     const v0 = vert[tri[i].v0];
     const v1 = vert[tri[i].v1];
     const v2 = vert[tri[i].v2];
 
-    const triAabbMin = new Vector3(1e30, 1e30, 1e30);
-    const triAabbMax = new Vector3(-1e30, -1e30, -1e30);
+    centr[i] = new Vector3((v0.x + v1.x + v2.x) / 3, (v0.y + v1.y + v2.y) / 3, (v0.z + v1.z + v2.z) / 3);
 
-    triAabbMin.x = Math.min(v0.x, v1.x, v2.x);
-    triAabbMin.y = Math.min(v0.y, v1.y, v2.y);
-    triAabbMin.z = Math.min(v0.z, v1.z, v2.z);
+    //precompute triangle bounds
+    const triAabbMin = [
+      Math.min(v0.x, v1.x, v2.x),
+      Math.min(v0.y, v1.y, v2.y),
+      Math.min(v0.z, v1.z, v2.z)
+    ];
+    const triAabbMax = [
+      Math.max(v0.x, v1.x, v2.x),
+      Math.max(v0.y, v1.y, v2.y),
+      Math.max(v0.z, v1.z, v2.z)
+    ];
 
-    triAabbMax.x = Math.max(v0.x, v1.x, v2.x);
-    triAabbMax.y = Math.max(v0.y, v1.y, v2.y);
-    triAabbMax.z = Math.max(v0.z, v1.z, v2.z);
-
-    triMin.push(triAabbMin);
-    triMax.push(triAabbMax);
+    triMin[i] = new Vector3(...triAabbMin);
+    triMax[i] = new Vector3(...triAabbMax);
   }
 
   bvh = [];
-  bvh[0] = new BVHNode(new Vector3(), new Vector3(), 0, tri.length);
+  bvh[0] = { aabbMin: new Vector3(), aabbMax: new Vector3(), offset: 0, triCount: tri.length };
   updateBounds(0, triMin, triMax);
   subdivide(0, centr, triMin, triMax);
 
@@ -80,33 +71,15 @@ function updateBounds(idx, triMin, triMax) {
 
 function subdivide(idx, centr, triMin, triMax) {
   const node = bvh[idx];
-  if (node.triCount <= 2) return;
+  if (node.triCount <= 4) return;
 
   // determine split with SAH bins
-  const SPLITS = 4;
-  var bestAxis = -1;
-  var bestPos = 0;
-  var bestCost = 1e30;
-  for (var i = 1; i < SPLITS; i++) {
-    const interval = add(node.aabbMin, mul(sub(node.aabbMax, node.aabbMin), i / SPLITS));
-    for (var ax = 0; ax < 3; ax++) {
-      const pos = getAxis(interval, ax);
-      const cost = heuristic(idx, ax, pos, centr, triMin, triMax);
-      if (cost < bestCost) {
-        bestPos = pos;
-        bestAxis = ax;
-        bestCost = cost;
-      }
-    }
-  }
-  const axis = bestAxis;
-  const splitPos = bestPos;
+  const { axis, splitPos, cost } = getSplit(idx, centr, triMin, triMax);
 
   // check whether the heuristic improves by subdividing
   const diff = sub(node.aabbMax, node.aabbMin);
   const area = diff.x * diff.y + diff.y * diff.z + diff.z * diff.x;
-  const parentCost = node.triCount * area;
-  if (bestCost >= parentCost) return;
+  if (cost >= node.triCount * area) return;
 
 
   // in-place partition
@@ -125,8 +98,8 @@ function subdivide(idx, centr, triMin, triMax) {
   const leftChildIdx = nodesUsed++;
   const rightChildIdx = nodesUsed++;
 
-  bvh[leftChildIdx] = new BVHNode(new Vector3(), new Vector3(), node.offset, leftCount);
-  bvh[rightChildIdx] = new BVHNode(new Vector3(), new Vector3(), i, node.triCount - leftCount);
+  bvh[leftChildIdx] = { aabbMin: new Vector3(), aabbMax: new Vector3(), offset: node.offset, triCount: leftCount };
+  bvh[rightChildIdx] = { aabbMin: new Vector3(), aabbMax: new Vector3(), offset: i, triCount: node.triCount - leftCount };
 
   node.offset = leftChildIdx;
   node.triCount = 0;
@@ -138,56 +111,96 @@ function subdivide(idx, centr, triMin, triMax) {
   subdivide(rightChildIdx, centr, triMin, triMax);
 }
 
-function heuristic(idx, axis, pos, centr, triMin, triMax) {
+
+function getSplit(idx, centr, triMin, triMax) {
   const node = bvh[idx];
+  const diff = sub(node.aabbMax, node.aabbMin);
 
-  var leftMinX = 1e30,   leftMinY = 1e30,   leftMinZ = 1e30;
-  var leftMaxX = -1e30,  leftMaxY = -1e30,  leftMaxZ = -1e30;
-  var rightMinX = 1e30,  rightMinY = 1e30,  rightMinZ = 1e30;
-  var rightMaxX = -1e30, rightMaxY = -1e30, rightMaxZ = -1e30;
-  var leftCount = 0;
-  var rightCount = 0;
+  const SPLITS = 4;
+  var bestAxis = -1;
+  var bestPos = 0;
+  var bestCost = 1e30;
 
-  for (var i = 0; i < node.triCount; i++ )
-  {
-    const triId = triIdx[node.offset + i];
-    const leafTriMin = triMin[triId];
-    const leafTriMax = triMax[triId];
+  const bins = new Array(SPLITS);
+  for (var ax = 0; ax < 3; ax++) {
+    if (getAxis(diff, ax) == 0) continue;
 
-    if (getAxis(centr[triId], axis) < pos) {
-      leftCount++;
+    for (var i = 0; i < SPLITS; i++) bins[i] = { aabbMin: [1e30, 1e30, 1e30], aabbMax: [-1e30, -1e30, -1e30], count: 0 };
+    const scale = SPLITS / getAxis(diff, ax);
 
-      leftMinX = Math.min(leftMinX, leafTriMin.x);
-      leftMinY = Math.min(leftMinY, leafTriMin.y);
-      leftMinZ = Math.min(leftMinZ, leafTriMin.z);
+    //generate bins and assign tris
+    for (var i = 0; i < node.triCount; i++) {
+      const triId = triIdx[node.offset + i];
+      let binIdx = Math.floor((getAxis(centr[triId], ax) - getAxis(node.aabbMin, ax)) * scale); //pick bin for tri
+      binIdx = Math.max(Math.min(binIdx, SPLITS - 1), 0); //clamp to array range
 
-      leftMaxX = Math.max(leftMaxX, leafTriMax.x);
-      leftMaxY = Math.max(leftMaxY, leafTriMax.y);
-      leftMaxZ = Math.max(leftMaxZ, leafTriMax.z);
-    } else {
-      rightCount++;
+      const leafTriMin = triMin[triId];
+      const leafTriMax = triMax[triId];
 
-      rightMinX = Math.min(rightMinX, leafTriMin.x);
-      rightMinY = Math.min(rightMinY, leafTriMin.y);
-      rightMinZ = Math.min(rightMinZ, leafTriMin.z);
+      bins[binIdx].count++;
 
-      rightMaxX = Math.max(rightMaxX, leafTriMax.x);
-      rightMaxY = Math.max(rightMaxY, leafTriMax.y);
-      rightMaxZ = Math.max(rightMaxZ, leafTriMax.z);
+      bins[binIdx].aabbMin[0] = Math.min(bins[binIdx].aabbMin[0], leafTriMin.x);
+      bins[binIdx].aabbMin[1] = Math.min(bins[binIdx].aabbMin[1], leafTriMin.y);
+      bins[binIdx].aabbMin[2] = Math.min(bins[binIdx].aabbMin[2], leafTriMin.z);
+
+      bins[binIdx].aabbMax[0] = Math.max(bins[binIdx].aabbMax[0], leafTriMax.x);
+      bins[binIdx].aabbMax[1] = Math.max(bins[binIdx].aabbMax[1], leafTriMax.y);
+      bins[binIdx].aabbMax[2] = Math.max(bins[binIdx].aabbMax[2], leafTriMax.z);
+    }
+
+    //abort if all tris in one bin
+    for (var b of bins) if (b.count == node.triCount) continue;
+
+    //gather area + count for each split
+    const leftArea = [],  rightArea = [];
+    const leftCount = [], rightCount = [];
+    var leftBoxMin = [1e30, 1e30, 1e30],  leftBoxMax = [-1e30, -1e30, -1e30];
+    var rightBoxMin = [1e30, 1e30, 1e30], rightBoxMax = [-1e30, -1e30, -1e30];
+    var leftSum = 0, rightSum = 0;
+    for (var i = 0; i < SPLITS - 1; i++) {
+      leftSum += bins[i].count;
+      leftCount[i] = leftSum;
+
+      leftBoxMin[0] = Math.min(leftBoxMin[0], bins[i].aabbMin[0]);
+      leftBoxMin[1] = Math.min(leftBoxMin[1], bins[i].aabbMin[1]);
+      leftBoxMin[2] = Math.min(leftBoxMin[2], bins[i].aabbMin[2]);
+
+      leftBoxMax[0] = Math.max(leftBoxMax[0], bins[i].aabbMax[0]);
+      leftBoxMax[1] = Math.max(leftBoxMax[1], bins[i].aabbMax[1]);
+      leftBoxMax[2] = Math.max(leftBoxMax[2], bins[i].aabbMax[2]);
+
+      const leftDiff = [leftBoxMax[0] - leftBoxMin[0], leftBoxMax[1] - leftBoxMin[1], leftBoxMax[2] - leftBoxMin[2]];
+      leftArea[i] = leftDiff[0] * leftDiff[1] + leftDiff[1] * leftDiff[2] + leftDiff[2] * leftDiff[0];
+
+      rightSum += bins[SPLITS - i - 1].count;
+      rightCount[SPLITS - i - 2] = rightSum;
+
+      rightBoxMin[0] = Math.min(rightBoxMin[0], bins[SPLITS - i - 1].aabbMin[0]);
+      rightBoxMin[1] = Math.min(rightBoxMin[1], bins[SPLITS - i - 1].aabbMin[1]);
+      rightBoxMin[2] = Math.min(rightBoxMin[2], bins[SPLITS - i - 1].aabbMin[2]);
+
+      rightBoxMax[0] = Math.max(rightBoxMax[0], bins[SPLITS - i - 1].aabbMax[0]);
+      rightBoxMax[1] = Math.max(rightBoxMax[1], bins[SPLITS - i - 1].aabbMax[1]);
+      rightBoxMax[2] = Math.max(rightBoxMax[2], bins[SPLITS - i - 1].aabbMax[2]);
+
+      const rightDiff = [rightBoxMax[0] - rightBoxMin[0], rightBoxMax[1] - rightBoxMin[1], rightBoxMax[2] - rightBoxMin[2]];
+      rightArea[SPLITS - i - 2] = rightDiff[0] * rightDiff[1] + rightDiff[1] * rightDiff[2] + rightDiff[2] * rightDiff[0];
+    }
+
+    //choose best split
+    for (var i = 0; i < SPLITS - 1; i++) {
+      const cost = leftCount[i] * leftArea[i] + rightCount[i] * rightArea[i];
+      if (cost < bestCost) {
+        bestAxis = ax;
+        bestPos = getAxis(node.aabbMin, ax) + (i + 1) / scale;
+        bestCost = cost;
+      }
     }
   }
 
-  if (leftCount == 0 || rightCount == 0) return 1e30;
-
-  const leftDiffX = leftMaxX - leftMinX, leftDiffY = leftMaxY - leftMinY, leftDiffZ = leftMaxZ - leftMinZ;
-  const leftArea = leftDiffX * leftDiffY + leftDiffY * leftDiffZ + leftDiffZ * leftDiffX;
-
-  const rightDiffX = rightMaxX - rightMinX, rightDiffY = rightMaxY - rightMinY, rightDiffZ = rightMaxZ - rightMinZ;
-  const rightArea = rightDiffX * rightDiffY + rightDiffY * rightDiffZ + rightDiffZ * rightDiffX;
-
-  const cost = leftCount * leftArea + rightCount * rightArea;
-  return cost > 0 ? cost : 1e30;
+  return { axis: bestAxis, splitPos: bestPos, cost: bestCost }
 }
+
 
 function swap(idx0, idx1) {
   const temp = triIdx[idx0];
