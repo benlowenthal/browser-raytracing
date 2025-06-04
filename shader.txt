@@ -37,11 +37,14 @@ struct Material {
 @group(0) @binding(11) var<uniform> rot: vec3f;
 
 @group(0) @binding(12) var<uniform> lightPos: vec3f;
+@group(0) @binding(13) var<uniform> time: f32;
+@group(0) @binding(14) var<uniform> accum_frames: u32;
 
 
 struct Ray {
 	start: vec3f,
-	dir: vec3f
+	dir: vec3f,
+	invDir : vec3f
 }
 
 struct Return {
@@ -64,7 +67,7 @@ fn intersectBVH(ray : Ray) -> Return {
 	var best = Hit(1e30f, 0f, 0f);
 	var hitIdx = 0u;
 
-	var stack = array<u32, 16>();
+	var stack = array<u32, 32>();
 	var head = 0i;
 	stack[head] = 0u;
 
@@ -108,12 +111,12 @@ fn intersectBVH(ray : Ray) -> Return {
 }
 
 fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> f32 {
-	let tx1 = (bmin.x - ray.start.x) / ray.dir.x;
-	let tx2 = (bmax.x - ray.start.x) / ray.dir.x;
-	let ty1 = (bmin.y - ray.start.y) / ray.dir.y;
-	let ty2 = (bmax.y - ray.start.y) / ray.dir.y;
-	let tz1 = (bmin.z - ray.start.z) / ray.dir.z;
-	let tz2 = (bmax.z - ray.start.z) / ray.dir.z;
+	let tx1 = (bmin.x - ray.start.x) * ray.invDir.x;
+	let tx2 = (bmax.x - ray.start.x) * ray.invDir.x;
+	let ty1 = (bmin.y - ray.start.y) * ray.invDir.y;
+	let ty2 = (bmax.y - ray.start.y) * ray.invDir.y;
+	let tz1 = (bmin.z - ray.start.z) * ray.invDir.z;
+	let tz2 = (bmax.z - ray.start.z) * ray.invDir.z;
 
 	let tmin = max(max(min(tx1, tx2), min(ty1, ty2)), min(tz1, tz2));
 	let tmax = min(min(max(tx1, tx2), max(ty1, ty2)), max(tz1, tz2));
@@ -141,35 +144,45 @@ fn intersectTri(ray : Ray, tri : Tri) -> Hit {
 	return miss;
 }
 
-fn random(x: f32, y: f32) -> f32 {
-	//random float between -0.5 and 0.5
-    return fract(sin(dot(vec2f(x,y), vec2(12.9898,78.233)))*43758.5453123) - 0.5f;
+fn random(v: vec3f) -> f32 {
+	//random float between 0, 1
+	var m = hash(bitcast<u32>(v.x)) ^ hash(bitcast<u32>(v.y)) ^ hash(bitcast<u32>(v.z));
+	const ieeeMantissa = 0x007FFFFFu; // binary32 mantissa bitmask
+    const ieeeOne      = 0x3F800000u; // 1.0 in IEEE binary32
+    m &= ieeeMantissa;                // Keep only mantissa bits (fractional part)
+    m |= ieeeOne;                     // Add fractional part to 1.0
+    return bitcast<f32>(m) - 1.0;     // Range [0:1]
 }
 
-fn lightTest(hitPnt: vec3f, intensity: f32, seethru: bool) -> f32 {
+fn hash(in: u32) -> u32 {
+	var x = in;
+	x += x << 10u;
+    x ^= x >> 6u;
+    x += x << 3u;
+    x ^= x >> 11u;
+    x += x << 15u;
+    return x;
+}
+
+fn lightTest(hitPnt: vec3f, intensity: f32, seed: vec3f) -> f32 {
 	let dir = lightPos - hitPnt;
-	let lightDist = length(dir);
-	let lightRay = Ray(hitPnt, normalize(dir + random(hitPnt.x, hitPnt.z) * 0.2f));
+	let lightDist = length(dir) - 0.0001f;
+	let lightDir = normalize(dir + random(seed) * 0.2f);
+	let lightRay = Ray(hitPnt + dir * 0.0001f, lightDir, 1 / lightDir);
 	let lightOut = intersectBVH(lightRay);
 	if (lightOut.hit.t > lightDist) { return intensity / lightDist; }
-
 	let hitMat = mat[lightOut.tri.m];
-	if (seethru && hitMat.transparency > 0) {
-		let hitPnt2 = lightRay.start + lightRay.dir * lightOut.hit.t;
-		let lightRay2 = Ray(hitPnt2, lightRay.dir);
-		let lightOut2 = intersectBVH(lightRay2);
-
-		if (lightOut.hit.t + lightOut2.hit.t > lightDist) { return intensity / lightDist; }
-	}
-
-	return 0;
+    return max((intensity * hitMat.transparency) / lightDist, 0);
 }
 
 @compute @workgroup_size(8,8)
 fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
-	const ambient = 0.2f;
+	const ambient = vec3f(0.5, 0.55, 0.65);
+	const samples = 1u;
+	const bounces = 5u;
 
 	let uv = vec3f(globalIdx);
+	var seed = vec3f(uv.xy, time);
 
 	let right = normalize(cross(vec3f(0, 1, 0), rot));
 	let up = normalize(cross(rot, right));
@@ -178,110 +191,136 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 	let screenPos = vec2f(uv.x/(dimension.x/2f) - 1f, (1f - uv.y/(dimension.y/2f)) * ratio);
 
 	let dir = normalize(rot + screenPos.x * right + screenPos.y * up);
-	let ray = Ray(pos, dir);
-	let out = intersectBVH(ray);
 
-	//ray missed all primitives
-	if (out.hit.t > 1e20f) {
-		let ij = vec2u(u32(uv.x), u32(uv.y));
-		textureStore(frame, vec3u(ij, 0u), vec4f(0, 0, 0, 1));
-		textureStore(frame, vec3u(ij, 1u), vec4f(0, 0, 0, 1));
-		textureStore(frame, vec3u(ij, 2u), vec4f(0, 0, 0, 1));
-		return;
-	}
-	
-	let hitPnt = ray.start + ray.dir * out.hit.t;
-	let bary = vec3f(1 - out.hit.u - out.hit.v, out.hit.u, out.hit.v);
+	let dir2 = normalize(rot + (screenPos.x-0.001f) * right + screenPos.y * up);
+	let dir3 = normalize(rot + (screenPos.x+0.001f) * right + screenPos.y * up);
+	let dir4 = normalize(rot + screenPos.x * right + (screenPos.y-0.001f) * up);
+	let dir5 = normalize(rot + screenPos.x * right + (screenPos.y+0.001f) * up);
 
-	let material = mat[out.tri.m];
+	var rays = array<Ray, 5>(Ray(pos, dir, 1 / dir),Ray(pos, dir2, 1 / dir2),Ray(pos, dir3, 1 / dir3),Ray(pos, dir4, 1 / dir4),Ray(pos, dir5, 1 / dir5));
 
-	let rand = vec3f(random(uv.x, uv.y), random(uv.x+1,uv.y), random(uv.x,uv.y+1));
-	let norm = normalize(normal[out.tri.v0n] * bary.x + normal[out.tri.v1n] * bary.y + normal[out.tri.v2n] * bary.z + rand * material.rough);
-	let texUV = uvs[out.tri.v0t] * bary.x + uvs[out.tri.v1t] * bary.y + uvs[out.tri.v2t] * bary.z;
+	//accumulate samples per pixel
+	var total = vec3f(0);
+	for (var s = 0u; s < samples; s++) {
+		var ray = rays[s];
+		var color = vec3f(0);
+		var throughput = vec3f(1);
 
+		for (var bounce = 0u; bounce < bounces; bounce++) {
+			let out = intersectBVH(ray);
 
-	//direct light testing
-	var light = 0f;
-	light += lightTest(hitPnt, 4, false);
-	light += lightTest(hitPnt, 4, false);
-	light *=  1 - material.gloss - material.transparency;
-
-
-	//object material reflects light
-	var reflColor = vec3f(0);
-	var reflLight = 0f;
-	if (material.gloss > 0) {
-		let reflDir = reflect(dir, norm);
-		let reflRay = Ray(hitPnt, normalize(reflDir));
-		let reflOut = intersectBVH(reflRay);
-
-		//reflected ray hit a primitive
-		if (reflOut.hit.t < 1e30f) {
-			let reflB = vec3f(1 - reflOut.hit.u - reflOut.hit.v, reflOut.hit.u, reflOut.hit.v);
-			let reflUV = uvs[reflOut.tri.v0t] * reflB.x + uvs[reflOut.tri.v1t] * reflB.y + uvs[reflOut.tri.v2t] * reflB.z;
-
-			let reflHitPnt = reflRay.start + reflRay.dir * reflOut.hit.t;
-			reflColor = sampleTexture(reflUV, mat[reflOut.tri.m].tex) * material.gloss;
-			reflLight = lightTest(reflHitPnt, 8, false) * material.gloss;
-		}
-	}
-
-
-	//object material refracts light
-	var refrColor = vec3f(0);
-	var refrLight = 0f;
-	if (material.transparency > 0) {
-		let refrDir = refract(dir, norm, material.refIdx);
-		let refrRay = Ray(hitPnt, normalize(refrDir));
-		let refrOut = intersectBVH(refrRay);
-		
-		//refracted ray hit a back face
-		if (refrOut.hit.t < 1e20f) {
-			let refrHitPnt = refrRay.start + refrRay.dir * refrOut.hit.t;
-			let baryr = vec3f(1 - refrOut.hit.u - refrOut.hit.v, refrOut.hit.u, refrOut.hit.v);
-			let norm2 = normal[refrOut.tri.v0n] * baryr.x + normal[refrOut.tri.v1n] * baryr.y + normal[refrOut.tri.v2n] * baryr.z;
-			let refrUV = uvs[refrOut.tri.v0t] * baryr.x + uvs[refrOut.tri.v1t] * baryr.y + uvs[refrOut.tri.v2t] * baryr.z;
-			
-			let refrMaterial = mat[refrOut.tri.m];
-			refrColor = sampleTexture(refrUV, refrMaterial.tex);
-			refrLight = lightTest(refrHitPnt, 8, true);
-
-			if (refrMaterial.transparency > 0) {
-				let refrDir2 = refract(refrDir, norm2, 1 / material.refIdx);
-				let refrRay2 = Ray(refrHitPnt, normalize(refrDir2));
-				let refrOut2 = intersectBVH(refrRay2);
-			
-				//refracted ray hit a primitive
-				if (refrOut2.hit.t < 1e20f) {
-					let refrHitPnt2 = refrRay2.start + refrRay2.dir * refrOut2.hit.t;
-					let baryr2 = vec3f(1 - refrOut2.hit.u - refrOut2.hit.v, refrOut2.hit.u, refrOut2.hit.v);
-					let refrUV2 = uvs[refrOut2.tri.v0t] * baryr2.x + uvs[refrOut2.tri.v1t] * baryr2.y + uvs[refrOut2.tri.v2t] * baryr2.z;
-
-					let refrColor2 = sampleTexture(refrUV2, mat[refrOut2.tri.m].tex);
-					let refrLight2 = lightTest(refrHitPnt2, 8, true);
-			
-					refrColor = mix(refrColor, refrColor2, refrMaterial.transparency);
-					refrLight = mix(refrLight, refrLight2, refrMaterial.transparency);
-				}
-			} else {
-				refrColor = mix(refrColor, vec3f(0), refrMaterial.transparency);
-				refrLight = mix(refrLight, 0, refrMaterial.transparency);
+			//ray missed all primitives
+			if (out.hit.t > 1e20f) {
+				color += throughput * ambient;
+				break;
 			}
+	
+
+			let bary = vec3f(1 - out.hit.u - out.hit.v, out.hit.u, out.hit.v);
+			let material = mat[out.tri.m];
+
+			let texUV = uvs[out.tri.v0t] * bary.x + uvs[out.tri.v1t] * bary.y + uvs[out.tri.v2t] * bary.z;
+			let texColor = sampleTexture(texUV, material.tex);
+
+
+			//emissive material override
+			if (material.refIdx < 0) {
+				color += throughput * texColor * -material.refIdx * 2;
+				break;
+			}
+
+
+			let hitPnt = ray.start + ray.dir * out.hit.t;
+			let norm = normalize(normal[out.tri.v0n] * bary.x + normal[out.tri.v1n] * bary.y + normal[out.tri.v2n] * bary.z);
+			let diffuse = 1 - material.transparency;
+		
+			//direct light testing
+			var light = 1f;
+			if (random(seed * 0.999) < diffuse) { light = lightTest(hitPnt, 8, seed * 1.002); }
+			color += throughput * texColor * diffuse * light;
+
+
+			//choose one interaction
+			let r = random(seed * 1.002);
+			var newDir: vec3f;
+
+
+			//schlick approx. for fresnel
+			let F0 = material.gloss;
+			let theta = dot(-ray.dir, norm);
+			let fresnel = (F0 + (1 - F0) * pow(1 - abs(theta), 5)) * (1 - material.rough);
+
+			if (r < fresnel) {
+				newDir = reflect(ray.dir, norm);
+				throughput *= texColor / fresnel;
+			}
+
+			else {
+				let r2 = random(seed * 0.997);
+
+				//diffuse
+				if (r2 < diffuse) {
+					//cosine hemisphere sampling
+					let a = random(seed * 1.003) * 6.2831853;	//angle in radians
+					let z = random(seed * 1.004) * 2 - 1;		//z from -1 to 1
+					let r = sqrt(max(0.0, 1.0 - z * z));
+					newDir = normalize(norm + vec3f(r * cos(a), r * sin(a), z));
+					throughput *= texColor / (diffuse * (1 - fresnel));
+				}
+
+				//refract
+				else{
+					let ior = material.refIdx;
+
+					//entering material
+					if (dot(-ray.dir, norm) > 0) {
+						newDir = refract(ray.dir, norm, 1 / ior);
+						throughput *= texColor;
+					}
+
+					//exiting material
+					else {
+						let theta = dot(-ray.dir, -norm);
+						let k = ior * ior * (1.0 - theta * theta);
+
+						if (k > 1) { newDir = reflect(ray.dir, -norm); }	//total internal reflection
+						else { newDir = refract(ray.dir, -norm, ior); }		//refraction
+
+						//beer-lambert absorption
+						let absorbColor = log(texColor);
+						throughput *= exp(-absorbColor * out.hit.t * 0.1);
+					}
+				
+					throughput *= 1 / (material.transparency * (1 - fresnel));
+				}
+
+			}
+
+			newDir = normalize(newDir);
+			ray = Ray(hitPnt + newDir * 0.0001f, newDir, 1 / newDir);
+
+
+			//terminate low energy paths
+			var p = max(max(throughput.x, throughput.y), throughput.z);
+			p = clamp(p, 0.0001, 0.9999);
+			if (random(seed * 1.005) > p) { break; }
+			throughput /= p; //compensate for lost rays
+
+			throughput = min(throughput, vec3f(10));
+			seed *= 1.01;
 		}
+		total += color;
+		seed *= 0.99;
 	}
-
-
-	//combine color sources
-	var color = sampleTexture(texUV, material.tex);
-	color = mix(color, reflColor, material.gloss);
-	color = mix(color, refrColor, material.transparency);
-
-	color *= ambient + light + reflLight + refrLight;
 
 	let ij = vec2u(u32(uv.x), u32(uv.y));
-	textureStore(frame, vec3u(ij, 0u), vec4f(color.r, 0, 0, 1));
-	textureStore(frame, vec3u(ij, 1u), vec4f(color.g, 0, 0, 1));
-	textureStore(frame, vec3u(ij, 2u), vec4f(color.b, 0, 0, 1));
+	let prevColor = vec3f(textureLoad(frame, vec3u(ij, 0u)).x, textureLoad(frame, vec3u(ij, 1u)).x, textureLoad(frame, vec3u(ij, 2u)).x);
+
+	total = (prevColor * f32(accum_frames * samples) + total) / f32((accum_frames + 1) * samples);
+
+	textureStore(frame, vec3u(ij, 0u), vec4f(total.r, 0, 0, 1));
+	textureStore(frame, vec3u(ij, 1u), vec4f(total.g, 0, 0, 1));
+	textureStore(frame, vec3u(ij, 2u), vec4f(total.b, 0, 0, 1));
 }
 
 @vertex
@@ -293,12 +332,20 @@ fn vertexMain(@location(0) pos: vec2f) -> @builtin(position) vec4f {
 fn fragmentMain(@builtin(position) uv: vec4f) -> @location(0) vec4f {
 	let ij = vec2u(u32(uv.x), u32(uv.y));
 
-	let color = vec3f(textureLoad(frame, vec3u(ij.x, ij.y, 0u)).x, textureLoad(frame, vec3u(ij.x, ij.y, 1u)).x, textureLoad(frame, vec3u(ij.x, ij.y, 2u)).x);
+	let color = vec3f(textureLoad(frame, vec3u(ij, 0u)).x, textureLoad(frame, vec3u(ij, 1u)).x, textureLoad(frame, vec3u(ij, 2u)).x);
 
 	let up = vec3f(textureLoad(frame, vec3u(ij.x, ij.y+1, 0u)).x, textureLoad(frame, vec3u(ij.x, ij.y+1, 1u)).x, textureLoad(frame, vec3u(ij.x, ij.y+1, 2u)).x);
 	let down = vec3f(textureLoad(frame, vec3u(ij.x, ij.y-1, 0u)).x, textureLoad(frame, vec3u(ij.x, ij.y-1, 1u)).x, textureLoad(frame, vec3u(ij.x, ij.y-1, 2u)).x);
 	let left = vec3f(textureLoad(frame, vec3u(ij.x-1, ij.y, 0u)).x, textureLoad(frame, vec3u(ij.x-1, ij.y, 1u)).x, textureLoad(frame, vec3u(ij.x-1, ij.y, 2u)).x);
 	let right = vec3f(textureLoad(frame, vec3u(ij.x+1, ij.y, 0u)).x, textureLoad(frame, vec3u(ij.x+1, ij.y, 1u)).x, textureLoad(frame, vec3u(ij.x+1, ij.y, 2u)).x);
 
-	return vec4f((4 * color + up + down + left + right) / 8, 1);
+	//ACESFilm tonemapping
+	const a = 2.51f;
+	const b = 0.03f;
+	const c = 2.43f;
+	const d = 0.59f;
+	const e = 0.14f;
+
+	let x = (4 * color + up + down + left + right) / 8;
+	return vec4f(saturate((x*(a*x+b))/(x*(c*x+d)+e)), 1);
 }
