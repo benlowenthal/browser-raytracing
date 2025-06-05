@@ -58,7 +58,7 @@ device.queue.writeBuffer(vertexBuffer, 0, vertices);
 
 
 //width/height uniforms
-const dims = new Float32Array([canvas.width, canvas.height]);
+const dims = new Uint32Array([canvas.width, canvas.height]);
 const wBuffer = device.createBuffer({
   label: "Dimensions",
   size: dims.byteLength,
@@ -68,12 +68,10 @@ device.queue.writeBuffer(wBuffer, 0, dims);
 
 
 //compute gpu texture
-const frame = device.createTexture({
-  label: "Compute texture",
-  size: [canvas.width, canvas.height, 3],
-  format: "r32float",
-  dimension: "3d",
-  usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST,
+const frame = device.createBuffer({
+  label: "Frame storage",
+  size: canvas.width * canvas.height * 4 * 4,
+  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
 });
 
 
@@ -179,10 +177,12 @@ function writeMaterialData() {
 
   //material data
   const matData = new Float32Array(mat.length * 5);
+  const matDataU = new Uint32Array(matData.buffer);
   for (var n = 0; n < mat.length; n++) {
+    matDataU.set([mat[n].texture], n * 5);
     matData.set([
-      mat[n].texture, mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx
-    ], n * 5);
+      mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx
+    ], n * 5 + 1);
   }
 
   matBuffer = device.createBuffer({
@@ -215,8 +215,6 @@ async function writeTextureData() {
     device.queue.copyExternalImageToTexture({ source: bm }, { texture: textures, origin: [0, 0, n] }, [SIZE, SIZE, 1]);
   }
 
-  console.log(textures);
-
 }
 
 writeTextureData();
@@ -245,6 +243,20 @@ const lightBuffer = device.createBuffer({
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
+//time for random seed
+const timeBuffer = device.createBuffer({
+  label: "Time Seed Buffer",
+  size: 4,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+
+//progressive rendering frame count
+const accumFrameBuffer = device.createBuffer({
+  label: "Frame Count Accumulation Buffer",
+  size: 4,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+
 
 //shader module
 const shaderModule = device.createShaderModule({
@@ -263,7 +275,7 @@ const bindGroupLayout = device.createBindGroupLayout({
   }, {
     binding: 1,
     visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
-    storageTexture: { format: "r32float", access: "read-write", viewDimension: "3d" }
+    buffer: { type: "storage" }
   }, {
     binding: 2,
     visibility: GPUShaderStage.COMPUTE,
@@ -308,6 +320,14 @@ const bindGroupLayout = device.createBindGroupLayout({
     binding: 12,
     visibility: GPUShaderStage.COMPUTE,
     buffer: {}
+  }, {
+    binding: 13,
+    visibility: GPUShaderStage.COMPUTE,
+    buffer: {}
+  }, {
+    binding: 14,
+    visibility: GPUShaderStage.COMPUTE,
+    buffer: {}
   }]
 });
 
@@ -322,7 +342,7 @@ function rebindGroup() {
       resource: { buffer: wBuffer }
     }, {
       binding: 1,
-      resource: frame.createView()
+      resource: { buffer: frame }
     }, {
       binding: 2,
       resource: { buffer: bvhBuffer }
@@ -350,12 +370,18 @@ function rebindGroup() {
     }, {
       binding: 10,
       resource: { buffer: posBuffer }
-    }, {
+    },  {
       binding: 11,
       resource: { buffer: rotBuffer }
-    }, {
+    },{
       binding: 12,
       resource: { buffer: lightBuffer }
+    }, {
+      binding: 13,
+      resource: { buffer: timeBuffer }
+    }, {
+      binding: 14,
+      resource: { buffer: accumFrameBuffer }
     }]
   });
 
@@ -370,13 +396,46 @@ const pipelineLayout = device.createPipelineLayout({
 });
 
 const computePipeline = device.createComputePipeline({
-  label: "Compute pipeline",
+  label: "Old pipeline",
   layout: pipelineLayout,
   compute: {
     module: shaderModule,
-    entryPoint: "computeMain",
+    entryPoint: "computeMain"
   }
 });
+
+//const rayPipeline = device.createComputePipeline({
+//  label: "Ray generation pipeline",
+//  layout: pipelineLayout,
+//  compute: {
+//    module: shaderModule,
+//    entryPoint: "rayCompute"
+//  }
+//});
+//const intersectPipeline = device.createComputePipeline({
+//  label: "BVH intersection pipeline",
+//  layout: pipelineLayout,
+//  compute: {
+//    module: shaderModule,
+//    entryPoint: "intersectCompute"
+//  }
+//});
+//const continuePipeline = device.createComputePipeline({
+//  label: "Continuation pipeline",
+//  layout: pipelineLayout,
+//  compute: {
+//    module: shaderModule,
+//    entryPoint: "continueCompute"
+//  }
+//});
+//const accumPipeline = device.createComputePipeline({
+//  label: "Accumulation pipeline",
+//  layout: pipelineLayout,
+//  compute: {
+//    module: shaderModule,
+//    entryPoint: "accumCompute"
+//  }
+//});
 
 const renderPipeline = device.createRenderPipeline({
   label: "Render pipeline",
@@ -396,13 +455,23 @@ const renderPipeline = device.createRenderPipeline({
 function draw() {
   const encoder = device.createCommandEncoder();
 
-  //COMPUTE PASS
-  const computePass = encoder.beginComputePass();
-  computePass.setPipeline(computePipeline);
-  computePass.setBindGroup(0, bindGroup);
-  computePass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
-  computePass.end();
 
+  //COMPUTE PASS
+  function encode(computePipeline, x, y, z) {
+    const setupPass = encoder.beginComputePass();
+    setupPass.setPipeline(computePipeline);
+    setupPass.setBindGroup(0, bindGroup);
+    setupPass.dispatchWorkgroups(x, y, z);
+    setupPass.end();
+  }
+
+  //encode(rayPipeline, Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8), 1);
+  //for (let i = 0; i < 5; i++) {
+  //  encode(intersectPipeline, dunno, dunno, dunno);
+  //  encode(continuePipeline, dunno, dunno, dunno);
+  //}
+  //encode(accumPipeline, Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8), 1);
+  encode(computePipeline, Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8), 1);
 
   //RENDER PASS
   const renderPass = encoder.beginRenderPass({
@@ -430,6 +499,7 @@ const rotLabel = document.getElementById("rot");
 var distance = 20;
 var pos = new Vector3(0, 0, 0);
 var rot = new Vector3(0, 0, 0);
+var framesSinceChange = 0;
 
 
 // CAMERA CONTROLS
@@ -450,6 +520,7 @@ canvas.addEventListener("mousemove", event => {
   if (dragging) {
     deltaX = event.pageX - dragStartX;
     deltaY = event.pageY - dragStartY;
+    framesSinceChange = 0;
   }
 });
 canvas.addEventListener("mouseup", () => {
@@ -463,6 +534,7 @@ canvas.addEventListener("wheel", event => {
   if (event.deltaY > 0) distance *= 1.1;
   else if (event.deltaY < 0) distance /= 1.1;
   distance = Math.max(distance, 0.1);
+  framesSinceChange = 0;
 });
 
 
@@ -499,6 +571,7 @@ importButton.addEventListener("click", async () => {
   //rebind buffers (size change)
   rebindGroup();
 
+  framesSinceChange = 0;
   importButton.disabled = false;
 });
 
@@ -508,6 +581,7 @@ lightButton.addEventListener("click", () => {
     document.getElementById("lightY").value,
     document.getElementById("lightZ").value
   ]));
+  framesSinceChange = 0;
 });
 
 
@@ -525,6 +599,8 @@ while (true) {
 
   device.queue.writeBuffer(posBuffer, 0, new Float32Array([pos.x, pos.y, pos.z]));
   device.queue.writeBuffer(rotBuffer, 0, new Float32Array([rot.x, rot.y, rot.z]));
+  device.queue.writeBuffer(timeBuffer, 0, new Float32Array([frameStart % 1e6]));
+  device.queue.writeBuffer(accumFrameBuffer, 0, new Uint32Array([framesSinceChange]));
   device.queue.submit([draw()]);
 
   await device.queue.onSubmittedWorkDone();
@@ -534,6 +610,7 @@ while (true) {
     await new Promise(r => setTimeout(r, MIN_FRAME_TIME - frameTime));
     frameTime = MIN_FRAME_TIME;
   }
+  framesSinceChange++;
 
   fpsLabel.innerHTML = Math.round(10000 / frameTime) / 10 + " fps";
   posLabel.innerHTML = "Camera position: " + Math.round(100 * pos.x) / 100 + ", " + Math.round(100 * pos.y) / 100 + ", " + Math.round(100 * pos.z) / 100;
