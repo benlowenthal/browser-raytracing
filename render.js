@@ -76,12 +76,9 @@ const frame = device.createBuffer({
 
 
 var bvhBuffer;
-var vertBuffer;
-var normalBuffer;
-var uvBuffer;
+var sceneBuffer;
 var triBuffer;
 function writeBufferData() {
-
   //BVH data buffers
   const bvhData = new Float32Array(bvh.length * 8);
   const bvhDataU = new Uint32Array(bvhData.buffer);
@@ -100,62 +97,40 @@ function writeBufferData() {
   device.queue.writeBuffer(bvhBuffer, 0, bvhData);
 
 
-  //vertices data
-  const vertData = new Float32Array(vert.length * 4);
-  for (var n = 0; n < vert.length; n++) {
-    vertData.set([
-      vert[n].x, vert[n].y, vert[n].z, 0
-    ], n * 4);
-  }
+  //scene data
+  const vertData = new Float32Array(vert.length * 3);
+  for (var n = 0; n < vert.length; n++)
+    vertData.set([ vert[n].x, vert[n].y, vert[n].z ], n * 3);
 
-  vertBuffer = device.createBuffer({
-    label: "Vertex Storage",
-    size: vertData.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(vertBuffer, 0, vertData);
+  const normalData = new Float32Array(normal.length * 3);
+  for (var n = 0; n < normal.length; n++)
+    normalData.set([ normal[n].x, normal[n].y, normal[n].z ], n * 3);
 
-
-  //vertex normals data
-  const normalData = new Float32Array(normal.length * 4);
-  for (var n = 0; n < normal.length; n++) {
-    normalData.set([
-      normal[n].x, normal[n].y, normal[n].z, 0
-    ], n * 4);
-  }
-
-  normalBuffer = device.createBuffer({
-    label: "Vertex Normal Storage",
-    size: normalData.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(normalBuffer, 0, normalData);
-
-
-  //vertex uv data
   const uvData = new Float32Array(uvs);
 
-  uvBuffer = device.createBuffer({
-    label: "Vertex UVs Storage",
-    size: uvData.byteLength,
+  sceneBuffer = device.createBuffer({
+    label: "Scene Storage",
+    size: vertData.byteLength + normalData.byteLength + uvData.byteLength,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(uvBuffer, 0, uvData);
+  device.queue.writeBuffer(sceneBuffer, 0, vertData);
+  device.queue.writeBuffer(sceneBuffer, vertData.byteLength, normalData);
+  device.queue.writeBuffer(sceneBuffer, vertData.byteLength + normalData.byteLength, uvData);
 
 
   //primitives data
   const triData = new Uint32Array(tri.length * 10);
   for (var n = 0; n < tri.length; n++) {
     triData.set([
-      tri[triIdx[n]].v0,
-      tri[triIdx[n]].v1,
-      tri[triIdx[n]].v2,
-      tri[triIdx[n]].v0n,
-      tri[triIdx[n]].v1n,
-      tri[triIdx[n]].v2n,
-      tri[triIdx[n]].v0t,
-      tri[triIdx[n]].v1t,
-      tri[triIdx[n]].v2t,
+      tri[triIdx[n]].v0 * 3,
+      tri[triIdx[n]].v1 * 3,
+      tri[triIdx[n]].v2 * 3,
+      (tri[triIdx[n]].v0n + vert.length) * 3,
+      (tri[triIdx[n]].v1n + vert.length) * 3,
+      (tri[triIdx[n]].v2n + vert.length) * 3,
+      (tri[triIdx[n]].v0t * 2) + (vert.length + normal.length) * 3,
+      (tri[triIdx[n]].v1t * 2) + (vert.length + normal.length) * 3,
+      (tri[triIdx[n]].v2t * 2) + (vert.length + normal.length) * 3,
       tri[triIdx[n]].mat
     ], n * 10);
   }
@@ -166,40 +141,34 @@ function writeBufferData() {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   device.queue.writeBuffer(triBuffer, 0, triData);
-
 }
-
 writeBufferData();
 
 
 var matBuffer;
 function writeMaterialData() {
-
   //material data
-  const matData = new Float32Array(mat.length * 5);
+  const matData = new Float32Array(64 * 8);
   const matDataU = new Uint32Array(matData.buffer);
   for (var n = 0; n < mat.length; n++) {
-    matDataU.set([mat[n].texture], n * 5);
+    matDataU.set([mat[n].texture], n * 8);
     matData.set([
-      mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx
-    ], n * 5 + 1);
+      mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx, 0, 0, 0
+    ], n * 8 + 1);
   }
 
   matBuffer = device.createBuffer({
     label: "Material Storage",
     size: matData.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   device.queue.writeBuffer(matBuffer, 0, matData);
-
 }
-
 writeMaterialData();
 
 
 var textures;
 async function writeTextureData() {
-
   //texture data
   const SIZE = 2048;
   textures = device.createTexture({
@@ -214,9 +183,7 @@ async function writeTextureData() {
     const bm = await createImageBitmap(tex[n], { resizeHeight: SIZE, resizeWidth: SIZE, resizeQuality: "high" });
     device.queue.copyExternalImageToTexture({ source: bm }, { texture: textures, origin: [0, 0, n] }, [SIZE, SIZE, 1]);
   }
-
 }
-
 writeTextureData();
 
 
@@ -224,15 +191,10 @@ writeTextureData();
 const sampler = device.createSampler();
 
 
-//camera position & rotation
-const posBuffer = device.createBuffer({
+//camera position, rotation and uniforms
+const cameraBuffer = device.createBuffer({
   label: "Position Buffer",
-  size: 3 * 4,
-  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-});
-const rotBuffer = device.createBuffer({
-  label: "Rotation Buffer",
-  size: 3 * 4,
+  size: 8 * 4,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
@@ -240,20 +202,6 @@ const rotBuffer = device.createBuffer({
 const lightBuffer = device.createBuffer({
   label: "Light Position Buffer",
   size: 3 * 4,
-  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-});
-
-//time for random seed
-const timeBuffer = device.createBuffer({
-  label: "Time Seed Buffer",
-  size: 4,
-  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-});
-
-//progressive rendering frame count
-const accumFrameBuffer = device.createBuffer({
-  label: "Frame Count Accumulation Buffer",
-  size: 4,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
@@ -266,176 +214,58 @@ const shaderModule = device.createShaderModule({
 
 
 //bind group + layout
+function uniformLayout(bind) { return { binding: bind, visibility: GPUShaderStage.COMPUTE, buffer: {} }; }
+function storageLayout(bind) { return { binding: bind, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }; }
+
 const bindGroupLayout = device.createBindGroupLayout({
   label: "Bind group layout",
-  entries: [{
-    binding: 0,
-    visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
-    buffer: {}
-  }, {
-    binding: 1,
-    visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
-    buffer: { type: "storage" }
-  }, {
-    binding: 2,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: { type: "read-only-storage" }
-  }, {
-    binding: 3,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: { type: "read-only-storage" }
-  }, {
-    binding: 4,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: { type: "read-only-storage" }
-  }, {
-    binding: 5,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: { type: "read-only-storage" }
-  }, {
-    binding: 6,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: { type: "read-only-storage" }
-  }, {
-    binding: 7,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: { type: "read-only-storage" }
-  }, {
-    binding: 8,
-    visibility: GPUShaderStage.COMPUTE,
-    texture: { viewDimension: "2d-array" }
-  }, {
-    binding: 9,
-    visibility: GPUShaderStage.COMPUTE,
-    sampler: {}
-  }, {
-    binding: 10,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: {}
-  }, {
-    binding: 11,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: {}
-  }, {
-    binding: 12,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: {}
-  }, {
-    binding: 13,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: {}
-  }, {
-    binding: 14,
-    visibility: GPUShaderStage.COMPUTE,
-    buffer: {}
-  }]
+  entries: [
+    { binding: 0, visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT, buffer: {} },
+    { binding: 1, visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT, buffer: { type: "storage" } },
+    uniformLayout(2),
+    uniformLayout(3),
+    storageLayout(10),
+    storageLayout(11),
+    storageLayout(12),
+    uniformLayout(13),
+    { binding: 20, visibility: GPUShaderStage.COMPUTE, texture: { viewDimension: "2d-array" } },
+    { binding: 21, visibility: GPUShaderStage.COMPUTE, sampler: {} }
+  ]
 });
 
 var bindGroup;
 function rebindGroup() {
-
+  function bindBuffer(bind, buf) { return { binding: bind, resource: { buffer: buf } } }
   bindGroup = device.createBindGroup({
     label: "Bind group",
     layout: bindGroupLayout,
-    entries: [{
-      binding: 0,
-      resource: { buffer: wBuffer }
-    }, {
-      binding: 1,
-      resource: { buffer: frame }
-    }, {
-      binding: 2,
-      resource: { buffer: bvhBuffer }
-    }, {
-      binding: 3,
-      resource: { buffer: vertBuffer }
-    }, {
-      binding: 4,
-      resource: { buffer: normalBuffer }
-    }, {
-      binding: 5,
-      resource: { buffer: uvBuffer }
-    }, {
-      binding: 6,
-      resource: { buffer: triBuffer }
-    }, {
-      binding: 7,
-      resource: { buffer: matBuffer }
-    }, {
-      binding: 8,
-      resource: textures.createView()
-    }, {
-      binding: 9,
-      resource: sampler
-    }, {
-      binding: 10,
-      resource: { buffer: posBuffer }
-    },  {
-      binding: 11,
-      resource: { buffer: rotBuffer }
-    },{
-      binding: 12,
-      resource: { buffer: lightBuffer }
-    }, {
-      binding: 13,
-      resource: { buffer: timeBuffer }
-    }, {
-      binding: 14,
-      resource: { buffer: accumFrameBuffer }
-    }]
+    entries: [
+      bindBuffer(0, wBuffer),
+      bindBuffer(1, frame),
+      bindBuffer(2, cameraBuffer),
+      bindBuffer(3, lightBuffer),
+      bindBuffer(10, bvhBuffer),
+      bindBuffer(11, sceneBuffer),
+      bindBuffer(12, triBuffer),
+      bindBuffer(13, matBuffer),
+      { binding: 20, resource: textures.createView() },
+      { binding: 21, resource: sampler }
+    ]
   });
-
 }
-
 rebindGroup();
 
 //pipelines + layout
-const pipelineLayout = device.createPipelineLayout({
-  label: "Universal Pipeline Layout",
-  bindGroupLayouts: [bindGroupLayout],
-});
+const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
 
 const computePipeline = device.createComputePipeline({
-  label: "Old pipeline",
+  label: "Megakernel pipeline",
   layout: pipelineLayout,
   compute: {
     module: shaderModule,
     entryPoint: "computeMain"
   }
 });
-
-//const rayPipeline = device.createComputePipeline({
-//  label: "Ray generation pipeline",
-//  layout: pipelineLayout,
-//  compute: {
-//    module: shaderModule,
-//    entryPoint: "rayCompute"
-//  }
-//});
-//const intersectPipeline = device.createComputePipeline({
-//  label: "BVH intersection pipeline",
-//  layout: pipelineLayout,
-//  compute: {
-//    module: shaderModule,
-//    entryPoint: "intersectCompute"
-//  }
-//});
-//const continuePipeline = device.createComputePipeline({
-//  label: "Continuation pipeline",
-//  layout: pipelineLayout,
-//  compute: {
-//    module: shaderModule,
-//    entryPoint: "continueCompute"
-//  }
-//});
-//const accumPipeline = device.createComputePipeline({
-//  label: "Accumulation pipeline",
-//  layout: pipelineLayout,
-//  compute: {
-//    module: shaderModule,
-//    entryPoint: "accumCompute"
-//  }
-//});
 
 const renderPipeline = device.createRenderPipeline({
   label: "Render pipeline",
@@ -452,26 +282,18 @@ const renderPipeline = device.createRenderPipeline({
   }
 });
 
+
 function draw() {
   const encoder = device.createCommandEncoder();
 
 
   //COMPUTE PASS
-  function encode(computePipeline, x, y, z) {
-    const setupPass = encoder.beginComputePass();
-    setupPass.setPipeline(computePipeline);
-    setupPass.setBindGroup(0, bindGroup);
-    setupPass.dispatchWorkgroups(x, y, z);
-    setupPass.end();
-  }
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(computePipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
+  pass.end();
 
-  //encode(rayPipeline, Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8), 1);
-  //for (let i = 0; i < 5; i++) {
-  //  encode(intersectPipeline, dunno, dunno, dunno);
-  //  encode(continuePipeline, dunno, dunno, dunno);
-  //}
-  //encode(accumPipeline, Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8), 1);
-  encode(computePipeline, Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8), 1);
 
   //RENDER PASS
   const renderPass = encoder.beginRenderPass({
@@ -504,31 +326,30 @@ var framesSinceChange = 0;
 
 // CAMERA CONTROLS
 
-var thetaX = 0;
-var deltaX = 0;
-var thetaY = -100;
-var deltaY = 0;
-var dragging = false;
-var dragStartX;
-var dragStartY;
+var thetaX = 0, thetaY = -100;
+var dragStartX, dragStartY, dragging = false, shifting = false;
+var camHeight = 0;
 canvas.addEventListener("mousedown", event => {
   dragging = true;
   dragStartX = event.pageX;
   dragStartY = event.pageY;
+  shifting = event.shiftKey;
 });
 canvas.addEventListener("mousemove", event => {
   if (dragging) {
-    deltaX = event.pageX - dragStartX;
-    deltaY = event.pageY - dragStartY;
+    if (shifting)
+      camHeight += (event.pageY - dragStartY) / 10;
+    else {
+      thetaX += event.pageX - dragStartX;
+      thetaY += event.pageY - dragStartY;
+    }
+    dragStartX = event.pageX;
+    dragStartY = event.pageY;
     framesSinceChange = 0;
   }
 });
 canvas.addEventListener("mouseup", () => {
   dragging = false;
-  thetaX += deltaX;
-  thetaY += deltaY;
-  deltaX = 0;
-  deltaY = 0;
 });
 canvas.addEventListener("wheel", event => {
   if (event.deltaY > 0) distance *= 1.1;
@@ -551,21 +372,19 @@ importButton.addEventListener("click", async () => {
     console.log(f);
     readTexture(f);
   }
+  await writeTextureData();
 
   for (const f of document.getElementById("input").files) if (f.name.endsWith(".mtl")) {
     console.log(f);
     await readMTL(f);
   }
+  writeMaterialData();
 
   for (const f of document.getElementById("input").files) if (f.name.endsWith(".obj")) {
     console.log(f);
     await buildOBJ(f);
     buildBVH();
   }
-
-  //rewrite buffers
-  await writeTextureData();
-  writeMaterialData();
   writeBufferData();
 
   //rebind buffers (size change)
@@ -591,16 +410,15 @@ const MIN_FRAME_TIME = 1000 / 60; //60 fps max
 while (true) {
   var frameStart = Date.now();
 
-  pos.x = distance * Math.sin((thetaY + deltaY) / 100) * Math.sin((thetaX + deltaX) / 100);
-  pos.y = distance * Math.cos((thetaY + deltaY) / 100);
-  pos.z = distance * Math.sin((thetaY + deltaY) / 100) * Math.cos((thetaX + deltaX) / 100);
+  pos.x = distance * Math.sin((thetaY) / 100) * Math.sin((thetaX) / 100);
+  pos.y = distance * Math.cos((thetaY) / 100);
+  pos.z = distance * Math.sin((thetaY) / 100) * Math.cos((thetaX) / 100);
 
   rot = mul(new Vector3(-pos.x, -pos.y, -pos.z), 1 / dist(pos));
+  pos.y += camHeight;
 
-  device.queue.writeBuffer(posBuffer, 0, new Float32Array([pos.x, pos.y, pos.z]));
-  device.queue.writeBuffer(rotBuffer, 0, new Float32Array([rot.x, rot.y, rot.z]));
-  device.queue.writeBuffer(timeBuffer, 0, new Float32Array([frameStart % 1e6]));
-  device.queue.writeBuffer(accumFrameBuffer, 0, new Uint32Array([framesSinceChange]));
+  device.queue.writeBuffer(cameraBuffer, 0, new Float32Array([pos.x, pos.y, pos.z, frameStart % 1e6, rot.x, rot.y, rot.z]));
+  device.queue.writeBuffer(cameraBuffer, 7 * 4, new Uint32Array([framesSinceChange]));
   device.queue.submit([draw()]);
 
   await device.queue.onSubmittedWorkDone();
