@@ -5,13 +5,8 @@ import { vert, normal, uvs, tri, mat, tex, buildOBJ, readMTL, readTexture } from
 const canvas = document.getElementById("canvas");
 const context = canvas.getContext("webgpu");
 
-function resizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-}
-
-window.addEventListener("resize", resizeCanvas);
-resizeCanvas();
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 
 buildBVH();
 
@@ -68,7 +63,7 @@ device.queue.writeBuffer(wBuffer, 0, dims);
 
 
 //compute gpu texture
-const frame = device.createBuffer({
+var frame = device.createBuffer({
   label: "Frame storage",
   size: canvas.width * canvas.height * 4 * 4,
   usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -360,6 +355,26 @@ canvas.addEventListener("wheel", event => {
 
 
 // BUTTON EVENTS
+
+window.addEventListener("resize", () => {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  //Update dimension uniforms
+  const dims = new Uint32Array([canvas.width, canvas.height]);
+  device.queue.writeBuffer(wBuffer, 0, dims);
+
+  //Recreate frame buffer
+  frame = device.createBuffer({
+    label: "Frame storage",
+    size: canvas.width * canvas.height * 4 * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  rebindGroup();
+
+  framesSinceChange = 0;
+});
+
 
 const importButton = document.getElementById("importButton");
 const lightButton = document.getElementById("lightButton");

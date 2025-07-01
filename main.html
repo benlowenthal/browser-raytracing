@@ -8,34 +8,69 @@
         canvas {
             display: block;
             position: fixed;
-            top: 3vh;
+            top: 0vh;
             left: 0vw;
             width: 100vw;
-            height: 97vh;
+            height: 100vh;
         }
-        p {
-            position: absolute;
-            margin: 0px;
-            top: 0px;
+
+        .ui-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: auto;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px;
+            box-sizing: border-box;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            font-size: 12px;
+            z-index: 1000;
         }
-        input {
-            position: absolute;
-            margin: 0px;
-            top: 0px;
+
+        .ui-item {
+            margin: 0;
+            padding: 2px 5px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+        }
+
+        .ui-input {
+            width: 40px;
+            padding: 2px;
+            font-size: 11px;
+        }
+
+        .ui-button {
+            padding: 3px 8px;
+            font-size: 11px;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
-    <p style="left: 0px" id="fps"></p>
-    <p style="left: 75px" id="pos"></p>
-    <p style="left: 300px" id="rot"></p>
-    <input style="left: 550px" type="file" id="input" webkitdirectory directory multiple />
-    <input style="left: 750px" type="button" value="Import .obj" id="importButton" />
+    <div class="ui-container">
+        <span class="ui-item" id="fps"></span>
+        <span class="ui-item" id="pos"></span>
+        <span class="ui-item" id="rot"></span>
 
-    <input style="left: 850px; width: 40px" type="text" inputmode="numeric" value="0" id="lightX" />
-    <input style="left: 900px; width: 40px" type="text" inputmode="numeric" value="0" id="lightY" />
-    <input style="left: 950px; width: 40px" type="text" inputmode="numeric" value="0" id="lightZ" />
-    <input style="left: 1000px" type="button" value="Move light" id="lightButton" />
+        <div class="ui-item">
+            <input class="ui-item" type="file" id="input" webkitdirectory directory multiple />
+            <input class="ui-button" type="button" value="Import .obj" id="importButton" />
+        </div>
+
+        <div class="ui-item">
+            <span>Light:</span>
+            <input class="ui-input" type="text" inputmode="numeric" value="0" id="lightX" />
+            <input class="ui-input" type="text" inputmode="numeric" value="0" id="lightY" />
+            <input class="ui-input" type="text" inputmode="numeric" value="0" id="lightZ" />
+            <input class="ui-button" type="button" value="Move" id="lightButton" />
+        </div>
+    </div>
 
     <canvas id="canvas"></canvas>
     <script type="module" src="render.js"></script>
