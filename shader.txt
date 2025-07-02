@@ -26,6 +26,11 @@ struct Camera {
 	rot: vec3f, accum_frames: u32
 }
 
+struct PointLight {
+	pos: vec3f, intensity: f32,
+	color: vec3f, radius: f32
+}
+
 struct Ray {
 	start: vec3f,
 	dir: vec3f,
@@ -45,7 +50,7 @@ struct Hit {
 @group(0) @binding(1) var<storage, read_write> frame: array<vec4f>;
 
 @group(0) @binding(2) var<uniform> camera: Camera;
-@group(0) @binding(3) var<uniform> lightPos: vec3f;
+@group(0) @binding(3) var<uniform> light: PointLight;
 
 @group(0) @binding(10) var<storage> bvh: array<BVHNode>;
 @group(0) @binding(11) var<storage> geo: array<f32>;
@@ -117,13 +122,14 @@ fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> f32 {
 fn intersectTri(ray : Ray, i : u32) -> Hit {
 	const miss = Hit(1e30f, 0f, 0f, 0u);
 	let tr = tri[i];
-	let edge1 = parseVec3(tr.v1) - parseVec3(tr.v0);
-	let edge2 = parseVec3(tr.v2) - parseVec3(tr.v0);
+	let v0 = parseVec3(tr.v0);
+	let edge1 = parseVec3(tr.v1) - v0;
+	let edge2 = parseVec3(tr.v2) - v0;
 	let h = cross(ray.dir, edge2);
 	let a = dot(edge1, h);
 	if (a > -0.0001f && a < 0.0001f) { return miss; }
 	let f = 1 / a;
-	let s = ray.start - parseVec3(tr.v0);
+	let s = ray.start - v0;
 	let u = f * dot(s, h);
 	if (u < 0f || u > 1f) { return miss; }
 	let q = cross(s, edge1);
@@ -154,15 +160,15 @@ fn hash(in: u32) -> u32 {
     return x;
 }
 
-fn lightTest(hitPnt: vec3f, intensity: f32, seed: vec3f) -> f32 {
-	let dir = lightPos - hitPnt;
+fn lightTest(hitPnt: vec3f, seed: vec3f) -> f32 {
+	let dir = light.pos - hitPnt;
 	let lightDist = length(dir) - 0.0001f;
-	let lightDir = normalize(dir + random(seed) * 0.2f);
+	let lightDir = normalize(dir + random(seed) * light.radius);
 	let lightRay = Ray(hitPnt + dir * 0.0001f, lightDir, 1 / lightDir);
 	let lightOut = intersectBVH(lightRay);
-	if (lightOut.t > lightDist) { return intensity / lightDist; }
+	if (lightOut.t > lightDist) { return light.intensity / lightDist; }
 	let hitMat = mat[tri[lightOut.i].m];
-    return max((intensity * hitMat.transparency) / lightDist, 0);
+    return max((light.intensity * hitMat.transparency) / lightDist, 0);
 }
 
 @compute @workgroup_size(8,8)
@@ -221,13 +227,13 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 		let diffuse = 1 - material.transparency;
 		
 		//direct light testing
-		var light = 1f;
-		if (random(seed * 0.999) < diffuse) { light = lightTest(hitPnt, 8, seed * 1.002); }
-		color += throughput * texColor * diffuse * light;
+		var lightFactor = light.color;
+		if (random(seed * 0.9) < diffuse) { lightFactor *= lightTest(hitPnt, seed * 1.1); }
+		color += throughput * texColor * diffuse * lightFactor;
 
 
 		//choose one interaction
-		let r = random(seed * 1.002);
+		let r = random(seed * 1.2);
 		var newDir: vec3f;
 
 
@@ -247,9 +253,9 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 			//diffuse
 			if (r2 < diffuse) {
 				//cosine hemisphere sampling
-				let a = random(seed * 1.003) * 6.2831853;	//angle in radians
-				let z = random(seed * 1.004) * 2 - 1;		//z from -1 to 1
-				let r = sqrt(max(0.0, 1.0 - z * z));
+				let a = random(seed * 1.3) * 6.2831853;	//angle in radians
+				let z = random(seed * 1.4) * 2 - 1;		//z from -1 to 1
+				let r = sqrt(max(0, 1 - z * z));
 				newDir = normalize(norm + vec3f(r * cos(a), r * sin(a), z));
 				throughput *= texColor / (diffuse * (1 - fresnel));
 			}
@@ -289,11 +295,11 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 		//terminate low energy paths
 		var p = max(max(throughput.x, throughput.y), throughput.z);
 		p = clamp(p, 0.0001, 0.9999);
-		if (random(seed * 1.005) > p) { break; }
+		if (random(seed * 0.98) > p) { break; }
 		throughput /= p; //compensate for lost rays
 
 		throughput = min(throughput, vec3f(10));
-		seed *= 1.01;
+		seed *= 1.1;
 	}
 
 

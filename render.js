@@ -188,15 +188,15 @@ const sampler = device.createSampler();
 
 //camera position, rotation and uniforms
 const cameraBuffer = device.createBuffer({
-  label: "Position Buffer",
+  label: "Camera Buffer",
   size: 8 * 4,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
-//light position
+//light position, color and intensity
 const lightBuffer = device.createBuffer({
-  label: "Light Position Buffer",
-  size: 3 * 4,
+  label: "Light Buffer",
+  size: 8 * 4,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
@@ -413,7 +413,10 @@ lightButton.addEventListener("click", () => {
   device.queue.writeBuffer(lightBuffer, 0, new Float32Array([
     document.getElementById("lightX").value,
     document.getElementById("lightY").value,
-    document.getElementById("lightZ").value
+    document.getElementById("lightZ").value, 8,
+    document.getElementById("lightR").value,
+    document.getElementById("lightG").value,
+    document.getElementById("lightB").value, 0.2
   ]));
   framesSinceChange = 0;
 });
