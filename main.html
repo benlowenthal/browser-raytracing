@@ -65,10 +65,14 @@
 
         <div class="ui-item">
             <span>Light:</span>
-            <input class="ui-input" type="text" inputmode="numeric" value="0" id="lightX" />
-            <input class="ui-input" type="text" inputmode="numeric" value="0" id="lightY" />
-            <input class="ui-input" type="text" inputmode="numeric" value="0" id="lightZ" />
-            <input class="ui-button" type="button" value="Move" id="lightButton" />
+            <input class="ui-input" type="number" value="0" id="lightX" />
+            <input class="ui-input" type="number" value="0" id="lightY" />
+            <input class="ui-input" type="number" value="0" id="lightZ" />
+            <span>Color:</span>                           
+            <input class="ui-input" type="number" value="0" min="0" max="1" step="0.01" id="lightR" />
+            <input class="ui-input" type="number" value="0" min="0" max="1" step="0.01" id="lightG" />
+            <input class="ui-input" type="number" value="0" min="0" max="1" step="0.01" id="lightB" />
+            <input class="ui-button" type="button" value="Update" id="lightButton" />
         </div>
     </div>
 
