@@ -5,78 +5,133 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebGPU Renderer</title>
     <style>
-        canvas {
-            display: block;
+        .fullscreen {
             position: fixed;
-            top: 0vh;
-            left: 0vw;
+            top: 0;
+            left: 0;
             width: 100vw;
             height: 100vh;
         }
 
-        .ui-container {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: auto;
-            background: rgba(0, 0, 0, 0.7);
+        body {
             color: white;
-            padding: 5px;
-            box-sizing: border-box;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
+            margin: 0;
+            font-family: sans-serif;
             font-size: 12px;
+        }
+
+        div {
+            display: flex;
+            flex: 1 1;
+            justify-content: space-between;
+            align-items: stretch;
+            pointer-events: none;
             z-index: 1000;
         }
 
-        .ui-item {
-            margin: 0;
-            padding: 2px 5px;
-            background: rgba(255, 255, 255, 0.1);
+        canvas {
+            display: block;
+            z-index: 0;
+        }
+
+        header {
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            flex: 0 0;
+            padding: 5px;
+            gap: 10px 20px;
+            flex-flow: row wrap;
+            align-items: stretch;
+            pointer-events: auto;
+        }
+
+        aside {
+            background: rgba(0, 0, 0, 0.25);
+            flex: 0 0 15%;
+            display: flex;
+            padding: 5px;
+            gap: 20px 10px;
+            flex-flow: column nowrap;
+            align-items: stretch;
+            pointer-events: auto;
+        }
+
+        span {
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            padding: 5px;
+            gap: 5px;
+            align-items: center;
+            justify-content: space-between;
             border-radius: 3px;
         }
 
-        .ui-input {
+        input {
+            color: white;
+            background: rgba(0, 0, 0, 0.5);
             width: 40px;
-            padding: 2px;
-            font-size: 11px;
         }
 
-        .ui-button {
-            padding: 3px 8px;
-            font-size: 11px;
-            cursor: pointer;
+        button, input::file-selector-button {
+            color: white;
+            background: rgba(0, 0, 0, 0.5);
+            width: 90px;
         }
     </style>
 </head>
 <body>
-    <div class="ui-container">
-        <span class="ui-item" id="fps"></span>
-        <span class="ui-item" id="pos"></span>
-        <span class="ui-item" id="rot"></span>
+    <div style="flex-direction: column" class="fullscreen">
+        <header>
+            <span style="width: 80px">
+                <label id="fps"></label>
+                <label>fps</label>
+            </span>
+            <span style="width: 200px">
+                <label>Camera position:</label>
+                <label id="pos"></label>
+            </span>
+            <span style="width: 200px">
+                <label>Camera rotation:</label>
+                <label id="rot"></label>
+            </span>
 
-        <div class="ui-item">
-            <input class="ui-item" type="file" id="input" webkitdirectory directory multiple />
-            <input class="ui-button" type="button" value="Import .obj" id="importButton" />
-        </div>
+            <span>
+                <input style="width: 200px" type="file" id="input" webkitdirectory directory multiple />
+                <button id="importButton">Import .obj</button>
+            </span>
 
-        <div class="ui-item">
-            <span>Light:</span>
-            <input class="ui-input" type="number" value="0" id="lightX" />
-            <input class="ui-input" type="number" value="0" id="lightY" />
-            <input class="ui-input" type="number" value="0" id="lightZ" />
-            <span>Color:</span>                           
-            <input class="ui-input" type="number" value="0" min="0" max="1" step="0.01" id="lightR" />
-            <input class="ui-input" type="number" value="0" min="0" max="1" step="0.01" id="lightG" />
-            <input class="ui-input" type="number" value="0" min="0" max="1" step="0.01" id="lightB" />
-            <input class="ui-button" type="button" value="Update" id="lightButton" />
+            <!--<span>
+                <label>Light:</label>
+                <input type="number" value="0" id="lightX" />
+                <input type="number" value="0" id="lightY" />
+                <input type="number" value="0" id="lightZ" />
+            </span>
+            <span>
+                <label>Color:</label>
+                <input type="number" value="0" min="0" max="1" step="0.01" id="lightR" />
+                <input type="number" value="0" min="0" max="1" step="0.01" id="lightG" />
+                <input type="number" value="0" min="0" max="1" step="0.01" id="lightB" />
+                <button id="lightButton">Update</button>
+            </span>-->
+        </header>
+
+        <div style="flex-direction: row">
+            <aside style="left: 0" id="matPanel">
+                <label>Scene:</label>
+            </aside>
+
+            <aside style="right: 0" id="setPanel">
+                <label>Settings:</label>
+                <span>
+                    <label>Light:</label>
+                    <input style="width: 70px" type="time" id="lightTime" />
+                    <input type="color" id="lightColor" />
+                </span>
+            </aside>
         </div>
     </div>
 
-    <canvas id="canvas"></canvas>
+    <canvas id="canvas" class="fullscreen"></canvas>
     <script type="module" src="render.js"></script>
 </body>
 </html>
