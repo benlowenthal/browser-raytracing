@@ -193,12 +193,24 @@ const cameraBuffer = device.createBuffer({
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
+
 //light position, color and intensity
+const lightTime = document.getElementById("lightTime");
+const lightColor = document.getElementById("lightColor");
 const lightBuffer = device.createBuffer({
   label: "Light Buffer",
   size: 8 * 4,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
+let theta = Math.PI * 0.5;
+device.queue.writeBuffer(lightBuffer, 0, new Float32Array([
+  Math.cos(theta),
+  Math.sin(theta) * Math.sin(40),
+  -Math.sin(theta) * Math.cos(40), 0.3,
+  1, 1, 1, 0.02
+]));
+lightTime.value = "12:00";
+lightColor.value = "#FFFFFF";
 
 
 //shader module
@@ -313,13 +325,13 @@ const posLabel = document.getElementById("pos");
 const rotLabel = document.getElementById("rot");
 
 
+// CAMERA CONTROLS
+
 var distance = 20;
 var pos = new Vector3(0, 0, 0);
 var rot = new Vector3(0, 0, 0);
 var framesSinceChange = 0;
 
-
-// CAMERA CONTROLS
 
 var thetaX = 0, thetaY = -100;
 var dragStartX, dragStartY, dragging = false, shifting = false;
@@ -377,7 +389,6 @@ window.addEventListener("resize", () => {
 
 
 const importButton = document.getElementById("importButton");
-const lightButton = document.getElementById("lightButton");
 
 importButton.addEventListener("click", async () => {
   importButton.disabled = true;
@@ -394,6 +405,7 @@ importButton.addEventListener("click", async () => {
     await readMTL(f);
   }
   writeMaterialData();
+  createMaterialPanel();
 
   for (const f of document.getElementById("input").files) if (f.name.endsWith(".obj")) {
     console.log(f);
@@ -409,22 +421,64 @@ importButton.addEventListener("click", async () => {
   importButton.disabled = false;
 });
 
-lightButton.addEventListener("click", () => {
+lightTime.addEventListener("change", () => {
+  let t = lightTime.value;
+  let mins = parseInt(t.slice(0, 2)) * 60 + parseInt(t.slice(3, 5));
+  let theta = Math.PI * (1.5 - 2 * (mins / 1440));
   device.queue.writeBuffer(lightBuffer, 0, new Float32Array([
-    document.getElementById("lightX").value,
-    document.getElementById("lightY").value,
-    document.getElementById("lightZ").value, 8,
-    document.getElementById("lightR").value,
-    document.getElementById("lightG").value,
-    document.getElementById("lightB").value, 0.2
+    Math.cos(theta),
+    Math.sin(theta) * Math.sin(40),
+    -Math.sin(theta) * Math.cos(40)
+  ]));
+  framesSinceChange = 0;
+});
+
+lightColor.addEventListener("change", () => {
+  let c = lightColor.value;
+  device.queue.writeBuffer(lightBuffer, 4 * 4, new Float32Array([
+    parseInt(c.slice(1, 3), 16) / 255,
+    parseInt(c.slice(3, 5), 16) / 255,
+    parseInt(c.slice(5, 7), 16) / 255
   ]));
   framesSinceChange = 0;
 });
 
 
+// ASIDE GENERATION
+
+function createMaterialPanel() {
+  //Generate material panel
+  var panelHTML = "<label>Scene:</label>";
+  for (var n = 0; n < mat.length; n++) {
+    panelHTML += `
+      <span style="flex-direction: column; align-items: stretch">
+      <span><label>${mat[n].name}</label></span>
+      <span><label>Texture:</label><input type="number" min="0" max="${tex.length}" step="1" value="${mat[n].texture}" id="${n}t" onchange="onChange(${n}, '${n}t', 'texture')" /></span>
+      <span><label>Rough:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].rough}" id="${n}r" onchange="onChange(${n}, '${n}r', 'rough')" /></span>
+      <span><label>Gloss:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].gloss}" id="${n}g" onchange="onChange(${n}, '${n}g', 'gloss')" /></span>
+      <span><label>Transparency:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].transparency}" id="${n}tr" onchange="onChange(${n}, '${n}tr', 'transparency')" /></span>
+      <span><label>Refr Idx:</label><input type="number" min="0" max="5" step="0.01" value="${mat[n].rIdx}" id="${n}i" onchange="onChange(${n}, '${n}i', 'rIdx')" /></span>
+      </span>
+    `;
+  }
+  document.getElementById("matPanel").innerHTML = panelHTML;
+}
+createMaterialPanel();
+
+function onChange(m, element, attr) {
+  mat[m][attr] = document.getElementById(element).value;
+  writeMaterialData();
+  rebindGroup();
+  framesSinceChange = 0;
+};
+window.onChange = onChange;
+
+
+
 // RENDERING LOOP
 
-const MIN_FRAME_TIME = 1000 / 60; //60 fps max
+const MAX_FPS = 60;
+const MIN_FRAME_TIME = 1000 / MAX_FPS;
 while (true) {
   var frameStart = Date.now();
 
@@ -435,20 +489,24 @@ while (true) {
   rot = mul(new Vector3(-pos.x, -pos.y, -pos.z), 1 / dist(pos));
   pos.y += camHeight;
 
-  device.queue.writeBuffer(cameraBuffer, 0, new Float32Array([pos.x, pos.y, pos.z, frameStart % 1e6, rot.x, rot.y, rot.z]));
+  device.queue.writeBuffer(cameraBuffer, 0 * 4, new Float32Array([pos.x, pos.y, pos.z]));
+  device.queue.writeBuffer(cameraBuffer, 3 * 4, new Uint32Array([frameStart % 1e6]));
+  device.queue.writeBuffer(cameraBuffer, 4 * 4, new Float32Array([rot.x, rot.y, rot.z]));
   device.queue.writeBuffer(cameraBuffer, 7 * 4, new Uint32Array([framesSinceChange]));
   device.queue.submit([draw()]);
 
   await device.queue.onSubmittedWorkDone();
 
   var frameTime = Date.now() - frameStart;
+  var fpsText = Math.round(10000 / frameTime) / 10;
+
   if (frameTime < MIN_FRAME_TIME) {
     await new Promise(r => setTimeout(r, MIN_FRAME_TIME - frameTime));
-    frameTime = MIN_FRAME_TIME;
+    fpsText += `(${MAX_FPS})`
   }
   framesSinceChange++;
 
-  fpsLabel.innerHTML = Math.round(10000 / frameTime) / 10 + " fps";
-  posLabel.innerHTML = "Camera position: " + Math.round(100 * pos.x) / 100 + ", " + Math.round(100 * pos.y) / 100 + ", " + Math.round(100 * pos.z) / 100;
-  rotLabel.innerHTML = "Camera rotation: " + Math.round(100 * rot.x) / 100 + ", " + Math.round(100 * rot.y) / 100 + ", " + Math.round(100 * rot.z) / 100;
+  fpsLabel.innerHTML = fpsText;
+  posLabel.innerHTML = Math.round(100 * pos.x) / 100 + ", " + Math.round(100 * pos.y) / 100 + ", " + Math.round(100 * pos.z) / 100;
+  rotLabel.innerHTML = Math.round(100 * rot.x) / 100 + ", " + Math.round(100 * rot.y) / 100 + ", " + Math.round(100 * rot.z) / 100;
 }
