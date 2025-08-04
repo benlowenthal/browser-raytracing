@@ -140,7 +140,11 @@ function writeBufferData() {
 writeBufferData();
 
 
-var matBuffer;
+var matBuffer = device.createBuffer({
+  label: "Material Storage",
+  size: 2048,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
 function writeMaterialData() {
   //material data
   const matData = new Float32Array(64 * 8);
@@ -151,12 +155,6 @@ function writeMaterialData() {
       mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx, 0, 0, 0
     ], n * 8 + 1);
   }
-
-  matBuffer = device.createBuffer({
-    label: "Material Storage",
-    size: matData.byteLength,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
   device.queue.writeBuffer(matBuffer, 0, matData);
 }
 writeMaterialData();
@@ -209,9 +207,40 @@ device.queue.writeBuffer(lightBuffer, 0, new Float32Array([
   -Math.sin(theta) * Math.cos(40), 0.3,
   1, 1, 1, 0.02
 ]));
-lightTime.value = "12:00";
-lightColor.value = "#FFFFFF";
 
+
+//settings buffer and defaults
+const planetSettings = document.getElementById("planetSettings");
+const cloudSettings = document.getElementById("cloudSettings");
+const settingsBuffer = device.createBuffer({
+  label: "Settings Buffer",
+  size: 8 * 4,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+
+const settingsArray = new Float32Array(planetSettings.childElementCount + cloudSettings.childElementCount - 2);
+for (var n = 1; n < planetSettings.childElementCount; n++) {
+  let input = planetSettings.children[n].children[1];
+  let idx = n - 1;
+  input.addEventListener("change", () => {
+    framesSinceChange = 0;
+    settingsArray[idx] = parseFloat(input.value);
+    device.queue.writeBuffer(settingsBuffer, 0, settingsArray);
+    console.log(settingsArray);
+  });
+  settingsArray[idx] = parseFloat(input.value);
+}
+for (var n = 1; n < cloudSettings.childElementCount; n++) {
+  let input = cloudSettings.children[n].children[1];
+  let idx = n + 2;
+  input.addEventListener("change", () => {
+    framesSinceChange = 0;
+    settingsArray[idx] = parseFloat(input.value);
+    device.queue.writeBuffer(settingsBuffer, 0, settingsArray);
+  });
+  settingsArray[idx] = parseFloat(input.value);
+}
+device.queue.writeBuffer(settingsBuffer, 0, settingsArray);
 
 //shader module
 const shaderModule = device.createShaderModule({
@@ -231,6 +260,7 @@ const bindGroupLayout = device.createBindGroupLayout({
     { binding: 1, visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT, buffer: { type: "storage" } },
     uniformLayout(2),
     uniformLayout(3),
+    uniformLayout(4),
     storageLayout(10),
     storageLayout(11),
     storageLayout(12),
@@ -251,6 +281,7 @@ function rebindGroup() {
       bindBuffer(1, frame),
       bindBuffer(2, cameraBuffer),
       bindBuffer(3, lightBuffer),
+      bindBuffer(4, settingsBuffer),
       bindBuffer(10, bvhBuffer),
       bindBuffer(11, sceneBuffer),
       bindBuffer(12, triBuffer),
@@ -344,6 +375,7 @@ canvas.addEventListener("mousedown", event => {
 });
 canvas.addEventListener("mousemove", event => {
   if (dragging) {
+    framesSinceChange = 0;
     if (shifting)
       camHeight += (event.pageY - dragStartY) / 10;
     else {
@@ -352,23 +384,23 @@ canvas.addEventListener("mousemove", event => {
     }
     dragStartX = event.pageX;
     dragStartY = event.pageY;
-    framesSinceChange = 0;
   }
 });
 canvas.addEventListener("mouseup", () => {
   dragging = false;
 });
 canvas.addEventListener("wheel", event => {
+  framesSinceChange = 0;
   if (event.deltaY > 0) distance *= 1.1;
   else if (event.deltaY < 0) distance /= 1.1;
   distance = Math.max(distance, 0.1);
-  framesSinceChange = 0;
 });
 
 
 // BUTTON EVENTS
 
 window.addEventListener("resize", () => {
+  framesSinceChange = 0;
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 
@@ -383,8 +415,6 @@ window.addEventListener("resize", () => {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   rebindGroup();
-
-  framesSinceChange = 0;
 });
 
 
@@ -392,6 +422,7 @@ const importButton = document.getElementById("importButton");
 
 importButton.addEventListener("click", async () => {
   importButton.disabled = true;
+  framesSinceChange = 0;
 
   //analyse uploaded files
   for (const f of document.getElementById("input").files) if (f.name.endsWith(".png") || f.name.endsWith(".jpg") || f.name.endsWith(".jpeg")) {
@@ -417,11 +448,11 @@ importButton.addEventListener("click", async () => {
   //rebind buffers (size change)
   rebindGroup();
 
-  framesSinceChange = 0;
   importButton.disabled = false;
 });
 
 lightTime.addEventListener("change", () => {
+  framesSinceChange = 0;
   let t = lightTime.value;
   let mins = parseInt(t.slice(0, 2)) * 60 + parseInt(t.slice(3, 5));
   let theta = Math.PI * (1.5 - 2 * (mins / 1440));
@@ -430,17 +461,16 @@ lightTime.addEventListener("change", () => {
     Math.sin(theta) * Math.sin(40),
     -Math.sin(theta) * Math.cos(40)
   ]));
-  framesSinceChange = 0;
 });
 
 lightColor.addEventListener("change", () => {
+  framesSinceChange = 0;
   let c = lightColor.value;
   device.queue.writeBuffer(lightBuffer, 4 * 4, new Float32Array([
     parseInt(c.slice(1, 3), 16) / 255,
     parseInt(c.slice(3, 5), 16) / 255,
     parseInt(c.slice(5, 7), 16) / 255
   ]));
-  framesSinceChange = 0;
 });
 
 
@@ -466,12 +496,17 @@ function createMaterialPanel() {
 createMaterialPanel();
 
 function onChange(m, element, attr) {
+  framesSinceChange = 0;
   mat[m][attr] = document.getElementById(element).value;
   writeMaterialData();
-  rebindGroup();
-  framesSinceChange = 0;
 };
 window.onChange = onChange;
+
+function onSettingChange(m, element, attr) {
+  framesSinceChange = 0;
+  mat[m][attr] = document.getElementById(element).value;
+  writeMaterialData();
+};
 
 
 
