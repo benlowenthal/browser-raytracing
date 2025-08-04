@@ -31,10 +31,19 @@ struct Light {
 	color: vec3f, radius: f32
 }
 
+struct Settings {
+	planetRadius: f32,
+	atmoRadius: f32,
+	aniso: f32,
+	cloudMin: f32,
+	cloudMax: f32,
+	cloudScale: f32,
+	cloudAniso: f32
+}
+
 struct Ray {
 	start: vec3f,
-	dir: vec3f,
-	invDir : vec3f
+	dir: vec3f
 }
 
 struct Hit {
@@ -44,6 +53,10 @@ struct Hit {
 	i: u32
 }
 
+struct SphereHit {
+	t1: f32,
+	t2: f32
+}
 
 @group(0) @binding(0) var<uniform> dimension: vec2u;
 
@@ -51,6 +64,7 @@ struct Hit {
 
 @group(0) @binding(2) var<uniform> camera: Camera;
 @group(0) @binding(3) var<uniform> light: Light;
+@group(0) @binding(4) var<uniform> settings: Settings;
 
 @group(0) @binding(10) var<storage> bvh: array<BVHNode>;
 @group(0) @binding(11) var<storage> geo: array<f32>;
@@ -106,12 +120,12 @@ fn intersectBVH(ray : Ray) -> Hit {
 }
 
 fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> f32 {
-	let tx1 = (bmin.x - ray.start.x) * ray.invDir.x;
-	let tx2 = (bmax.x - ray.start.x) * ray.invDir.x;
-	let ty1 = (bmin.y - ray.start.y) * ray.invDir.y;
-	let ty2 = (bmax.y - ray.start.y) * ray.invDir.y;
-	let tz1 = (bmin.z - ray.start.z) * ray.invDir.z;
-	let tz2 = (bmax.z - ray.start.z) * ray.invDir.z;
+	let tx1 = (bmin.x - ray.start.x) / ray.dir.x;
+	let tx2 = (bmax.x - ray.start.x) / ray.dir.x;
+	let ty1 = (bmin.y - ray.start.y) / ray.dir.y;
+	let ty2 = (bmax.y - ray.start.y) / ray.dir.y;
+	let tz1 = (bmin.z - ray.start.z) / ray.dir.z;
+	let tz2 = (bmax.z - ray.start.z) / ray.dir.z;
 
 	let tmin = max(max(min(tx1, tx2), min(ty1, ty2)), min(tz1, tz2));
 	let tmax = min(min(max(tx1, tx2), max(ty1, ty2)), max(tz1, tz2));
@@ -151,15 +165,66 @@ fn pcg(n: u32) -> u32 {
     return (h >> 22u) ^ h;
 }
 
+fn fbm(p: vec3f) -> f32 {
+	var p2 = p;
+	var m = mat3x3f(vec3f(-0.37, 0.36, 0.85), vec3f(-0.14, -0.93, 0.34), vec3f(0.92, 0.01, 0.4));
+    var f = 0f;
+    f += 0.5333333333 * simplex(p2); p2 *= m * 2.02;
+    f += 0.2666666667 * simplex(p2); p2 *= m * 2.03;
+    f += 0.1333333333 * simplex(p2); p2 *= m * 2.01;
+	f += 0.0666666667 * simplex(p2);
+    return f;
+}
+
+fn random3(c: vec3f) -> vec3f {
+    let j = 4096 * sin(dot(c, vec3f(17.0, 59.4, 15.0)));
+    let r = vec3f(fract(64 * j), fract(8 * j), fract(512 * j));
+    return r - 0.5;
+}
+
+fn simplex(p: vec3f) -> f32 {
+	const F3 = 0.333333333333;
+	const G3 = 0.166666666667;
+
+    let s = floor(p + dot(p, vec3f(F3)));
+    let x = p - s + dot(s, vec3f(G3));
+    let e = step(vec3f(0), x - x.yzx);
+    let i1 = e * (1 - e.zxy);
+    let i2 = 1 - e.zxy * (1 - e);
+
+    let x1 = x - i1 + G3;
+    let x2 = x - i2 + 2f * G3;
+    let x3 = x - 1 + 3f * G3;
+
+    var w = vec4f(dot(x, x), dot(x1, x1), dot(x2, x2), dot(x3, x3));
+    w = max(0.6 - w, vec4f(0));
+    w *= w;
+    w *= w;
+
+    let d = vec4f(dot(random3(s), x), dot(random3(s + i1), x1), dot(random3(s + i2), x2), dot(random3(s + 1), x3));
+
+    return dot(d * w, vec4f(52));
+}
+
 fn lightTest(hitPnt: vec3f, seed: vec2u) -> f32 {
 	let randVec = vec3f(random(seed), random(seed + 1), random(seed + 2)) * 2 - 1;
 	let lightDir = normalize(light.dir + randVec * light.radius);
 	if (lightDir.y < 0) { return 0; }
-	let lightRay = Ray(hitPnt + light.dir * 0.0001f, lightDir, 1 / lightDir);
+	let lightRay = Ray(hitPnt + light.dir * 0.0001f, lightDir);
 	let lightOut = intersectBVH(lightRay);
 	if (lightOut.t > 1e20f) { return light.intensity; }
 	let hitMat = mat[tri[lightOut.i].m];
     return max(light.intensity * hitMat.transparency, 0);
+}
+
+fn intersectSphere(start: vec3f, dir: vec3f, radius: f32) -> SphereHit {
+    let b = 2f * dot(start, dir);
+    let c = dot(start, start) - radius * radius;
+    let d = b * b - 4f * c;
+    if (d < 0) { return SphereHit(-1f, -1f); } //no intersection
+	let t1 = 0.5 * (-b - sqrt(d));
+	let t2 = 0.5 * (-b + sqrt(d));
+	return SphereHit(t1, t2);
 }
 
 @compute @workgroup_size(8,8)
@@ -173,7 +238,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 	if (globalIdx.x >= dimension.x || globalIdx.y >= dimension.y) { return; }
 
 	//early exit for pixel converging
-	if (camera.accum_frames > 10 && frame[frameIdx].a < 0.0005f) { return; }
+	if (camera.accum_frames > 60 && frame[frameIdx].a < 0.0005f) { return; }
 	
 	let uvFloat = vec2f(globalIdx.xy);
 	let dimFloat = vec2f(dimension);
@@ -188,24 +253,92 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 	var color = vec3f(0);
 	var throughput = vec3f(1);
 
-	var ray = Ray(camera.pos, dir, 1 / dir);
+	var ray = Ray(camera.pos, dir);
 	for (var bounce = 0u; bounce < bounces; bounce++) {
 		let out = intersectBVH(ray);
 
 		//ray missed all primitives
 		if (out.t > 1e20f) {
-			let day = (light.dir.y + 1) * 0.5f;
-			let sunset = 1 - abs(light.dir.y);
-			let sunDot = dot(ray.dir, light.dir);
-			let sunMask = smoothstep(-1, 0, ray.dir.y) * smoothstep(1 - (light.radius * 0.1f), 1, sunDot) * light.color;
 
-			let horizon = mix(vec3(0.6, 0.8, 1), vec3(1, 0.4, 0.1), pow(sunset, 2)) * day;
-			let zenith = mix(vec3f(0.05, 0, 0.1), vec3f(0.1, 0.3, 0.6), day);
+			//scattering phase functions
+			let anisotrophy2 = settings.aniso * settings.aniso;
+			let cloudAniso2 = settings.cloudAniso * settings.cloudAniso;
 
-			let t = (ray.dir.y + 1) * 0.5f;
-			let skyMask = smoothstep(-1, 0, ray.dir.y) * mix(horizon, zenith, t) * light.color;
+			let cosTheta = dot(ray.dir, light.dir);
+			let phaseR = 0.75 * (1 + cosTheta * cosTheta);
+			let phaseM = 1.5 * (1 + cosTheta * cosTheta) * (1 - anisotrophy2) / (2 + anisotrophy2) * sqrt(pow((1 + anisotrophy2 - 2 * settings.aniso * cosTheta), 3));
+			let phaseC = 1.5 * (1 + cosTheta * cosTheta) * (1 - cloudAniso2) / (2 + cloudAniso2) * sqrt(pow((1 + cloudAniso2 - 2 * settings.cloudAniso * cosTheta), 3));
 
-			color += throughput * (skyMask + sunMask);
+			//scatter coefficients
+			let betaR = vec3f(5.5e-6, 13.0e-6, 22.4e-6);
+			let betaM = vec3f(1e-5, 1.1e-5, 1.2e-5);
+			let betaC = vec3f(2e-4, 2e-4, 2e-4);
+			
+			//background color
+			let space = select(vec3f(0), vec3f(1), simplex(ray.dir * 100) > 0.8);
+			let sun = light.color * exp2(1e4 * (cosTheta - 1));
+			
+			//intersect with planet/atmosphere
+			var origin = ray.start + vec3f(0, settings.planetRadius + 100f, 0);
+			let atmoHit = intersectSphere(origin, ray.dir, settings.atmoRadius);
+			if (atmoHit.t2 < 0) { color += throughput * (space + sun); break; } //misses atmosphere
+			let planetHit = intersectSphere(origin, ray.dir, settings.planetRadius);
+			if (planetHit.t1 < 0 && planetHit.t2 > 0) { break; } //inside planet
+			let planetT = select(planetHit.t1, planetHit.t2, planetHit.t1 < 0);
+
+			//find raymarch start + length in atmosphere
+			origin = select(origin, origin + ray.dir * atmoHit.t1, atmoHit.t1 > 0);
+			let close = select(atmoHit.t2, planetT, planetT > 0);
+			let tDist = select(close, close - atmoHit.t1, atmoHit.t1 > 0);
+			let step = tDist / 20f;
+
+			var integralR = vec3f(0); var integralM = vec3f(0); var integralC = vec3f(0);
+			var transmitR = vec3f(1); var transmitM = vec3f(1); var transmitC = vec3f(1);
+			
+			for (var i = 0u; i < 20u; i++) {
+				let p = origin + ray.dir * step * (f32(i) + 0.5);
+				let h = length(p) - settings.planetRadius;
+				let density = exp(-h / 8200);
+
+				//estimate average density in direction of sun
+				let ts = intersectSphere(origin + ray.dir * step * f32(i), light.dir, settings.atmoRadius);
+				let sunStep = select(ts.t1, ts.t2, ts.t1 < 0);
+				let sunP = p + light.dir * sunStep * 0.5;
+				let sunH = length(sunP) - settings.planetRadius;
+				let sunDensity = exp(-sunH / 8200);
+
+				//cloud density calculation
+				if (h > settings.cloudMin && h < settings.cloudMax) {
+					//fbm function in range [-1,1]
+					let noise1 = smoothstep(0, 0.3, fbm(p * 0.1f / settings.cloudScale));
+					let noise2 = smoothstep(0, 0.2, fbm(p * 1f / settings.cloudScale));
+					let noise3 = smoothstep(0, 0.1, fbm(p * 2f / settings.cloudScale));
+					let noise = noise1 * (noise2 * 0.8 + noise3 * 0.2);
+
+					let cloudHeight = (h - settings.cloudMin) / (settings.cloudMax - settings.cloudMin);
+					let cloudDensity = noise * cloudHeight * pow(1 - cloudHeight, 4) * 12.25; //function to shape clouds
+
+					let sunC = exp(-betaC * sunDensity * sunStep);
+					integralC += sunC * betaC * cloudDensity * transmitC * step;
+					transmitC *= exp(-betaC * cloudDensity * step);
+				}
+
+				let sunR = exp(-betaR * sunDensity * sunStep);
+				integralR += sunR * betaR * density * transmitR * step;
+				transmitR *= exp(-betaR * density * step);
+
+				let sunM = exp(-betaM * sunDensity * sunStep);
+				integralM += sunM * betaM * density * transmitM * step;
+				transmitM *= exp(-betaM * density * step);
+
+				//early exit for low transmittance
+				let eps = vec3f(0.01);
+				if (all(transmitR < eps) && all(transmitM < eps) && all(transmitC < eps)) { break; }
+			}
+			let total = integralR * phaseR + integralM * phaseM + integralC * phaseC;
+			let sunTotal = sun * select(1f, 0f, planetT > 0) * transmitC; //remaining transmissance through clouds
+
+			color += throughput * (light.color * total + sunTotal);
 			break;
 		}
 	
@@ -235,17 +368,15 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 		color += throughput * texColor * diffuse * lightFactor;
 
 
-		//choose one interaction
-		let r = random(seed + 3);
 		var newDir: vec3f;
 
 
 		//schlick approx. for fresnel
 		let F0 = material.gloss;
 		let theta = dot(-ray.dir, norm);
-		let fresnel = (F0 + (1 - F0) * pow(1 - abs(theta), 5)) * (1 - material.rough);
+		let fresnel = clamp(0.001, 0.999, (F0 + (1 - F0) * pow(1 - abs(theta), 5)) * (1 - material.rough));
 
-		if (r < fresnel) {
+		if (random(seed + 3) < fresnel) {
 			newDir = reflect(ray.dir, norm);
 			throughput *= texColor / fresnel;
 		}
@@ -270,7 +401,6 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 				//entering material
 				if (dot(-ray.dir, norm) > 0) {
 					newDir = refract(ray.dir, norm, 1 / ior);
-					throughput *= texColor;
 				}
 
 				//exiting material
@@ -282,17 +412,14 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 					//else { newDir = refract(ray.dir, -norm, ior); }		//refraction
 
 					newDir = select(refract(ray.dir, -norm, ior), reflect(ray.dir, -norm), k > 1);
-
-					//beer-lambert absorption
-					throughput *= pow(texColor, vec3f(-out.t));
 				}
 				
-				throughput *= 1 / (material.transparency * (1 - fresnel));
+				throughput *= texColor / (material.transparency * (1 - fresnel));
 			}
 
 		}
 
-		ray = Ray(hitPnt + newDir * 0.0001f, newDir, 1 / newDir);
+		ray = Ray(hitPnt + newDir * 0.0001f, newDir);
 
 
 		//terminate low energy paths
