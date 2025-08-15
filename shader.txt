@@ -1,3 +1,9 @@
+struct TLASNode {
+	aabbMin: vec3f, offset: u32,
+	aabbMax: vec3f,	nodeCount: u32,
+	transform: mat4x4f
+}
+
 struct BVHNode {
 	aabbMin: vec3f, offset: u32,
 	aabbMax: vec3f,	triCount: u32
@@ -53,6 +59,13 @@ struct Hit {
 	i: u32
 }
 
+struct TLASHit {
+	t: f32,
+	i: u32,
+	uv: vec2f,
+	normal: vec3f
+}
+
 struct SphereHit {
 	t1: f32,
 	t2: f32
@@ -66,10 +79,11 @@ struct SphereHit {
 @group(0) @binding(3) var<uniform> light: Light;
 @group(0) @binding(4) var<uniform> settings: Settings;
 
-@group(0) @binding(10) var<storage> bvh: array<BVHNode>;
-@group(0) @binding(11) var<storage> geo: array<f32>;
-@group(0) @binding(12) var<storage> tri: array<Tri>;
-@group(0) @binding(13) var<uniform> mat: array<Material, 64>;
+@group(0) @binding(10) var<storage> tlas: array<TLASNode>;
+@group(0) @binding(11) var<storage> bvh: array<BVHNode>;
+@group(0) @binding(12) var<storage> geo: array<f32>;
+@group(0) @binding(13) var<storage> tri: array<Tri>;
+@group(0) @binding(14) var<uniform> mat: array<Material, 64>;
 
 @group(0) @binding(20) var textures: texture_2d_array<f32>;
 @group(0) @binding(21) var texSampler: sampler;
@@ -80,15 +94,50 @@ fn parseVec3(i : u32) -> vec3f { return vec3f(geo[i], geo[i+1], geo[i+2]); }
 
 fn sampleTexture(coords : vec2f, layer : u32) -> vec3f { return textureSampleLevel(textures, texSampler, vec2f(coords.x, 1-coords.y), layer, 0f).xyz; }
 
-fn intersectBVH(ray : Ray) -> Hit {
+fn intersectTLAS(ray : Ray) -> TLASHit {
 	var best = Hit(1e30f, 0f, 0f, 0u);
-	if (intersectAABB(ray, best.t, bvh[0].aabbMin, bvh[0].aabbMax) == 1e30f) { return best; }
+	var bestIdx = 0u;
+	for (var i = 0u; i < arrayLength(&tlas); i++) {
+		let node = tlas[i];
+		let tr = node.transform;
+		let scale = length(tr[0].xyz);
+		let invScale = 1f / scale;
+
+		let invRot = mat3x3f(
+			tr[0][0] * invScale, tr[1][0] * invScale, tr[2][0] * invScale,
+			tr[0][1] * invScale, tr[1][1] * invScale, tr[2][1] * invScale,
+			tr[0][2] * invScale, tr[1][2] * invScale, tr[2][2] * invScale
+		);
+
+		let rayTransform = Ray(invRot * (ray.start - tr[3].xyz) * invScale, normalize(invRot * ray.dir));
+		if (intersectAABB(rayTransform, node.aabbMin, node.aabbMax) < best.t * invScale) {
+			var test = intersectBVH(rayTransform, node.offset);
+			test.t *= scale; //scale ray distance
+			if (test.t < best.t) { best = test; bestIdx = i; }
+		}
+	}
+
+	//calc barycentric + scaled normal
+	if (best.t < 1e20f) {
+		let hitTri = tri[best.i];
+		let bary = vec3f(1 - best.u - best.v, best.u, best.v);
+		let texUV = parseVec2(hitTri.v0t) * bary.x + parseVec2(hitTri.v1t) * bary.y + parseVec2(hitTri.v2t) * bary.z;
+		let norm = normalize(parseVec3(hitTri.v0n) * bary.x + parseVec3(hitTri.v1n) * bary.y + parseVec3(hitTri.v2n) * bary.z);
+
+		return TLASHit(best.t, best.i, texUV, normalize((tlas[bestIdx].transform * vec4f(norm, 0)).xyz));
+	}
+
+	return TLASHit(1e30f, 0u, vec2f(), vec3f());
+}
+
+fn intersectBVH(ray : Ray, rootIdx : u32) -> Hit {
+	var best = Hit(1e30f, 0f, 0f, 0u);
 
 	var stack = array<u32, 32>();
 	var head = 0i;
-	stack[head] = 0u;
+	stack[head] = rootIdx;
 
-	while (head > -1i) {
+	while (head > -1) {
 		let pop = bvh[stack[head]];
 		head--;
 
@@ -100,26 +149,26 @@ fn intersectBVH(ray : Ray) -> Hit {
 			continue;
 		}
 
-		let dist1 = intersectAABB(ray, best.t, bvh[pop.offset].aabbMin, bvh[pop.offset].aabbMax);
-		let dist2 = intersectAABB(ray, best.t, bvh[pop.offset+1].aabbMin, bvh[pop.offset+1].aabbMax);
+		let dist1 = intersectAABB(ray, bvh[pop.offset].aabbMin, bvh[pop.offset].aabbMax);
+		let dist2 = intersectAABB(ray, bvh[pop.offset+1].aabbMin, bvh[pop.offset+1].aabbMax);
 
 		let swap = dist1 < dist2;
 
 		//push far child
 		let far = select(pop.offset, pop.offset + 1, swap);
 		let farDist = select(dist1, dist2, swap);
-		if (farDist < 1e30f) { head++; stack[head] = far; }
+		if (farDist < best.t) { head++; stack[head] = far; }
 
 		//push near child
 		let near = select(pop.offset + 1, pop.offset, swap);
 		let nearDist = select(dist2, dist1, swap);
-		if (nearDist < 1e30f) { head++; stack[head] = near; }
+		if (nearDist < best.t) { head++; stack[head] = near; }
 	}
 
 	return best;
 }
 
-fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> f32 {
+fn intersectAABB(ray : Ray, bmin : vec3f, bmax : vec3f) -> f32 {
 	let tx1 = (bmin.x - ray.start.x) / ray.dir.x;
 	let tx2 = (bmax.x - ray.start.x) / ray.dir.x;
 	let ty1 = (bmin.y - ray.start.y) / ray.dir.y;
@@ -130,7 +179,7 @@ fn intersectAABB(ray : Ray, dist : f32, bmin : vec3f, bmax : vec3f) -> f32 {
 	let tmin = max(max(min(tx1, tx2), min(ty1, ty2)), min(tz1, tz2));
 	let tmax = min(min(max(tx1, tx2), max(ty1, ty2)), max(tz1, tz2));
 
-	return select(1e30f, tmin, (tmax >= tmin && tmin < dist && tmax > 0f));
+	return select(1e30f, tmin, (tmax >= tmin && tmax > 0f));
 }
 
 fn intersectTri(ray : Ray, i : u32) -> Hit {
@@ -154,6 +203,16 @@ fn intersectTri(ray : Ray, i : u32) -> Hit {
 	return miss;
 }
 
+fn intersectSphere(start: vec3f, dir: vec3f, radius: f32) -> SphereHit {
+    let b = 2f * dot(start, dir);
+    let c = dot(start, start) - radius * radius;
+    let d = b * b - 4f * c;
+    if (d < 0) { return SphereHit(-1f, -1f); } //no intersection
+	let t1 = 0.5 * (-b - sqrt(d));
+	let t2 = 0.5 * (-b + sqrt(d));
+	return SphereHit(t1, t2);
+}
+
 fn random(v: vec2u) -> f32 {
 	let m = pcg(v.x) ^ pcg(v.y);
 	return f32(m) / 0xFFFFFFFF;
@@ -169,9 +228,9 @@ fn fbm(p: vec3f) -> f32 {
 	var p2 = p;
 	var m = mat3x3f(vec3f(-0.37, 0.36, 0.85), vec3f(-0.14, -0.93, 0.34), vec3f(0.92, 0.01, 0.4));
     var f = 0f;
-    f += 0.5333333333 * simplex(p2); p2 *= m * 2.02;
-    f += 0.2666666667 * simplex(p2); p2 *= m * 2.03;
-    f += 0.1333333333 * simplex(p2); p2 *= m * 2.01;
+    f += 0.5333333333 * simplex(p2); p2 = m * p2 * 2.02;
+    f += 0.2666666667 * simplex(p2); p2 = m * p2 * 2.03;
+    f += 0.1333333333 * simplex(p2); p2 = m * p2 * 2.01;
 	f += 0.0666666667 * simplex(p2);
     return f;
 }
@@ -211,20 +270,92 @@ fn lightTest(hitPnt: vec3f, seed: vec2u) -> f32 {
 	let lightDir = normalize(light.dir + randVec * light.radius);
 	if (lightDir.y < 0) { return 0; }
 	let lightRay = Ray(hitPnt + light.dir * 0.0001f, lightDir);
-	let lightOut = intersectBVH(lightRay);
+	let lightOut = intersectTLAS(lightRay);
 	if (lightOut.t > 1e20f) { return light.intensity; }
 	let hitMat = mat[tri[lightOut.i].m];
     return max(light.intensity * hitMat.transparency, 0);
 }
 
-fn intersectSphere(start: vec3f, dir: vec3f, radius: f32) -> SphereHit {
-    let b = 2f * dot(start, dir);
-    let c = dot(start, start) - radius * radius;
-    let d = b * b - 4f * c;
-    if (d < 0) { return SphereHit(-1f, -1f); } //no intersection
-	let t1 = 0.5 * (-b - sqrt(d));
-	let t2 = 0.5 * (-b + sqrt(d));
-	return SphereHit(t1, t2);
+fn getSkyColor(ray: Ray, steps: u32) -> vec3f {
+	//scattering phase functions
+	let anisotrophy2 = settings.aniso * settings.aniso;
+	let cloudAniso2 = settings.cloudAniso * settings.cloudAniso;
+
+	let cosTheta = dot(ray.dir, light.dir);
+	let phaseR = 0.75 * (1 + cosTheta * cosTheta);
+	let phaseM = 1.5 * (1 + cosTheta * cosTheta) * (1 - anisotrophy2) / (2 + anisotrophy2) * sqrt(pow((1 + anisotrophy2 - 2 * settings.aniso * cosTheta), 3));
+	let phaseC = 1.5 * (1 + cosTheta * cosTheta) * (1 - cloudAniso2) / (2 + cloudAniso2) * sqrt(pow((1 + cloudAniso2 - 2 * settings.cloudAniso * cosTheta), 3));
+
+	//scatter coefficients
+	let betaR = vec3f(5.5e-6, 13.0e-6, 22.4e-6);
+	let betaM = vec3f(1e-5, 1.1e-5, 1.2e-5);
+	let betaC = vec3f(2e-4, 2e-4, 2e-4);
+			
+	//background color
+	let space = select(vec3f(0), vec3f(1), simplex(ray.dir * 100) > 0.8);
+	let sun = light.color * min(exp2(1e4 * (cosTheta - 0.9999)), 1);
+			
+	//intersect with planet/atmosphere
+	var origin = ray.start + vec3f(0, settings.planetRadius + 100f, 0);
+	let atmoHit = intersectSphere(origin, ray.dir, settings.atmoRadius);
+	if (atmoHit.t2 < 0) { return space + sun; } //misses atmosphere
+	let planetHit = intersectSphere(origin, ray.dir, settings.planetRadius);
+	if (planetHit.t1 < 0 && planetHit.t2 > 0) { return vec3f(0); } //inside planet
+	let planetT = select(planetHit.t1, planetHit.t2, planetHit.t1 < 0);
+
+	//find raymarch start + length in atmosphere
+	origin = select(origin, origin + ray.dir * atmoHit.t1, atmoHit.t1 > 0);
+	let close = select(atmoHit.t2, planetT, planetT > 0);
+	let tDist = select(close, close - atmoHit.t1, atmoHit.t1 > 0);
+	let step = tDist / f32(steps);
+
+	var integralR = vec3f(0); var integralM = vec3f(0); var integralC = vec3f(0);
+	var transmitR = vec3f(1); var transmitM = vec3f(1); var transmitC = vec3f(1);
+			
+	for (var i = 0u; i < steps; i++) {
+		let p = origin + ray.dir * step * (f32(i) + 0.5);
+		let h = length(p) - settings.planetRadius;
+		let density = exp(-h / 8200);
+
+		//estimate average density in direction of sun
+		let ts = intersectSphere(origin + ray.dir * step * f32(i), light.dir, settings.atmoRadius);
+		let sunStep = select(ts.t1, ts.t2, ts.t1 < 0);
+		let sunP = p + light.dir * sunStep * 0.5;
+		let sunH = length(sunP) - settings.planetRadius;
+		let sunDensity = exp(-sunH / 8200);
+
+		//cloud density calculation
+		if (h > settings.cloudMin && h < settings.cloudMax) {
+			//fbm function in range [-1,1]
+			let noise1 = smoothstep(0, 0.3, fbm(p * 0.1f / settings.cloudScale));
+			let noise2 = smoothstep(0, 0.2, fbm(p * 1f / settings.cloudScale));
+			let noise3 = smoothstep(0, 0.1, fbm(p * 2f / settings.cloudScale));
+			let noise = noise1 * (noise2 * 0.8 + noise3 * 0.2);
+
+			let cloudHeight = (h - settings.cloudMin) / (settings.cloudMax - settings.cloudMin);
+			let cloudDensity = noise * cloudHeight * pow(1 - cloudHeight, 4) * 12.25; //function to shape clouds
+
+			let sunC = exp(-betaC * sunDensity * sunStep);
+			integralC += sunC * betaC * cloudDensity * transmitC * step;
+			transmitC *= exp(-betaC * cloudDensity * step);
+		}
+
+		let sunR = exp(-betaR * sunDensity * sunStep);
+		integralR += sunR * betaR * density * transmitR * step;
+		transmitR *= exp(-betaR * density * step);
+
+		let sunM = exp(-betaM * sunDensity * sunStep);
+		integralM += sunM * betaM * density * transmitM * step;
+		transmitM *= exp(-betaM * density * step);
+
+		//early exit for low transmittance
+		let eps = vec3f(0.01);
+		if (all(transmitR < eps) && all(transmitM < eps) && all(transmitC < eps)) { break; }
+	}
+	let total = integralR * phaseR + integralM * phaseM + integralC * phaseC;
+	let sunTotal = sun * select(1f, 0f, planetT > 0) * transmitC; //remaining transmittance through clouds
+
+	return light.color * total + sunTotal;
 }
 
 @compute @workgroup_size(8,8)
@@ -255,100 +386,16 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 
 	var ray = Ray(camera.pos, dir);
 	for (var bounce = 0u; bounce < bounces; bounce++) {
-		let out = intersectBVH(ray);
+		let out = intersectTLAS(ray);
 
 		//ray missed all primitives
 		if (out.t > 1e20f) {
-
-			//scattering phase functions
-			let anisotrophy2 = settings.aniso * settings.aniso;
-			let cloudAniso2 = settings.cloudAniso * settings.cloudAniso;
-
-			let cosTheta = dot(ray.dir, light.dir);
-			let phaseR = 0.75 * (1 + cosTheta * cosTheta);
-			let phaseM = 1.5 * (1 + cosTheta * cosTheta) * (1 - anisotrophy2) / (2 + anisotrophy2) * sqrt(pow((1 + anisotrophy2 - 2 * settings.aniso * cosTheta), 3));
-			let phaseC = 1.5 * (1 + cosTheta * cosTheta) * (1 - cloudAniso2) / (2 + cloudAniso2) * sqrt(pow((1 + cloudAniso2 - 2 * settings.cloudAniso * cosTheta), 3));
-
-			//scatter coefficients
-			let betaR = vec3f(5.5e-6, 13.0e-6, 22.4e-6);
-			let betaM = vec3f(1e-5, 1.1e-5, 1.2e-5);
-			let betaC = vec3f(2e-4, 2e-4, 2e-4);
-			
-			//background color
-			let space = select(vec3f(0), vec3f(1), simplex(ray.dir * 100) > 0.8);
-			let sun = light.color * exp2(1e4 * (cosTheta - 1));
-			
-			//intersect with planet/atmosphere
-			var origin = ray.start + vec3f(0, settings.planetRadius + 100f, 0);
-			let atmoHit = intersectSphere(origin, ray.dir, settings.atmoRadius);
-			if (atmoHit.t2 < 0) { color += throughput * (space + sun); break; } //misses atmosphere
-			let planetHit = intersectSphere(origin, ray.dir, settings.planetRadius);
-			if (planetHit.t1 < 0 && planetHit.t2 > 0) { break; } //inside planet
-			let planetT = select(planetHit.t1, planetHit.t2, planetHit.t1 < 0);
-
-			//find raymarch start + length in atmosphere
-			origin = select(origin, origin + ray.dir * atmoHit.t1, atmoHit.t1 > 0);
-			let close = select(atmoHit.t2, planetT, planetT > 0);
-			let tDist = select(close, close - atmoHit.t1, atmoHit.t1 > 0);
-			let step = tDist / 20f;
-
-			var integralR = vec3f(0); var integralM = vec3f(0); var integralC = vec3f(0);
-			var transmitR = vec3f(1); var transmitM = vec3f(1); var transmitC = vec3f(1);
-			
-			for (var i = 0u; i < 20u; i++) {
-				let p = origin + ray.dir * step * (f32(i) + 0.5);
-				let h = length(p) - settings.planetRadius;
-				let density = exp(-h / 8200);
-
-				//estimate average density in direction of sun
-				let ts = intersectSphere(origin + ray.dir * step * f32(i), light.dir, settings.atmoRadius);
-				let sunStep = select(ts.t1, ts.t2, ts.t1 < 0);
-				let sunP = p + light.dir * sunStep * 0.5;
-				let sunH = length(sunP) - settings.planetRadius;
-				let sunDensity = exp(-sunH / 8200);
-
-				//cloud density calculation
-				if (h > settings.cloudMin && h < settings.cloudMax) {
-					//fbm function in range [-1,1]
-					let noise1 = smoothstep(0, 0.3, fbm(p * 0.1f / settings.cloudScale));
-					let noise2 = smoothstep(0, 0.2, fbm(p * 1f / settings.cloudScale));
-					let noise3 = smoothstep(0, 0.1, fbm(p * 2f / settings.cloudScale));
-					let noise = noise1 * (noise2 * 0.8 + noise3 * 0.2);
-
-					let cloudHeight = (h - settings.cloudMin) / (settings.cloudMax - settings.cloudMin);
-					let cloudDensity = noise * cloudHeight * pow(1 - cloudHeight, 4) * 12.25; //function to shape clouds
-
-					let sunC = exp(-betaC * sunDensity * sunStep);
-					integralC += sunC * betaC * cloudDensity * transmitC * step;
-					transmitC *= exp(-betaC * cloudDensity * step);
-				}
-
-				let sunR = exp(-betaR * sunDensity * sunStep);
-				integralR += sunR * betaR * density * transmitR * step;
-				transmitR *= exp(-betaR * density * step);
-
-				let sunM = exp(-betaM * sunDensity * sunStep);
-				integralM += sunM * betaM * density * transmitM * step;
-				transmitM *= exp(-betaM * density * step);
-
-				//early exit for low transmittance
-				let eps = vec3f(0.01);
-				if (all(transmitR < eps) && all(transmitM < eps) && all(transmitC < eps)) { break; }
-			}
-			let total = integralR * phaseR + integralM * phaseM + integralC * phaseC;
-			let sunTotal = sun * select(1f, 0f, planetT > 0) * transmitC; //remaining transmissance through clouds
-
-			color += throughput * (light.color * total + sunTotal);
+			color += throughput * getSkyColor(ray, 10u);
 			break;
 		}
-	
-			
-		let hitTri = tri[out.i];
-		let bary = vec3f(1 - out.u - out.v, out.u, out.v);
-		let material = mat[hitTri.m];
 
-		let texUV = parseVec2(hitTri.v0t) * bary.x + parseVec2(hitTri.v1t) * bary.y + parseVec2(hitTri.v2t) * bary.z;
-		let texColor = sampleTexture(texUV, material.tex);
+		let material = mat[tri[out.i].m];
+		let texColor = sampleTexture(out.uv, material.tex);
 
 
 		//emissive material override
@@ -359,7 +406,7 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 
 
 		let hitPnt = ray.start + ray.dir * out.t;
-		let norm = normalize(parseVec3(hitTri.v0n) * bary.x + parseVec3(hitTri.v1n) * bary.y + parseVec3(hitTri.v2n) * bary.z);
+		let norm = out.normal;
 		let diffuse = 1 - material.transparency;
 		
 		//direct light testing
@@ -395,8 +442,9 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 			}
 
 			//refract
-			else{
+			else {
 				let ior = material.refIdx;
+				throughput *= texColor / (material.transparency * (1 - fresnel));
 
 				//entering material
 				if (dot(-ray.dir, norm) > 0) {
@@ -407,16 +455,9 @@ fn computeMain(@builtin(global_invocation_id) globalIdx: vec3u) {
 				else {
 					let theta = dot(-ray.dir, -norm);
 					let k = ior * ior * (1.0 - theta * theta);
-
-					//if (k > 1) { newDir = reflect(ray.dir, -norm); }		//total internal reflection
-					//else { newDir = refract(ray.dir, -norm, ior); }		//refraction
-
 					newDir = select(refract(ray.dir, -norm, ior), reflect(ray.dir, -norm), k > 1);
 				}
-				
-				throughput *= texColor / (material.transparency * (1 - fresnel));
 			}
-
 		}
 
 		ray = Ray(hitPnt + newDir * 0.0001f, newDir);
