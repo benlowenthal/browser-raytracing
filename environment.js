@@ -17,7 +17,7 @@ export const normal = [
 ];
 
 export const uvs = [
-  0.01, 0.01
+  1,1
 ];
 
 export const tri = [
@@ -32,7 +32,7 @@ export const tri = [
 ];
 
 export const mat = [
-  { name: "default", texture: 0, rough: 0, gloss: 0.7, transparency: 0, rIdx: 1 }
+  { name: "default", texture: 0, rough: 0, gloss: 0, transparency: 0, rIdx: 1 }
 ];
 
 export const tex = [await fetch("missing.jpg").then(r => r.blob())];
@@ -41,6 +41,7 @@ export const tex = [await fetch("missing.jpg").then(r => r.blob())];
 export async function buildOBJ(blob) {
   console.time("OBJ parsing");
 
+  const triOff = tri.length;
   const vertOff = vert.length;
   const normOff = normal.length;
   const uvOff = uvs.length / 2;
@@ -49,7 +50,6 @@ export async function buildOBJ(blob) {
   const matMap = new Map();
   for (let j = 0; j < mat.length; j++) matMap.set(mat[j].name, j);
   let matIdx = 0;
-
 
   // STRANGE CUSTOM STREAM MAGIC
 
@@ -108,6 +108,8 @@ export async function buildOBJ(blob) {
 
   console.timeEnd("OBJ parsing");
   console.log(".obj build successful");
+  
+  return { offset: triOff, count: tri.length - triOff };
 }
 
 
@@ -120,6 +122,12 @@ export async function readMTL(blob) {
   for (const line of txt) {
     var sp = line.trim().split(/\s+/);
     if (sp[0] == "newmtl") matIdx = mat.push({ name: sp[1].trim(), texture: 0, rough: 0, gloss: 0, transparency: 0, rIdx: 1 }) - 1;
+
+    else if (sp[0] == "Pr") mat[matIdx].rough = parseFloat(sp[1]);
+    else if (sp[0] == "Pg") mat[matIdx].gloss = parseFloat(sp[1]);
+    else if (sp[0] == "Ni") mat[matIdx].rIdx = parseFloat(sp[1]);
+    else if (sp[0] == "Tr") mat[matIdx].transparency = parseFloat(sp[1]);
+    else if (sp[0] == "d") mat[matIdx].transparency = 1 - parseFloat(sp[1]);
 
     else if (sp[0] == "map_Kd") {
       var existing = false;
@@ -135,7 +143,7 @@ export async function readMTL(blob) {
       if (!existing) console.log("Missing texture " + sp[1].trim());
     }
   }
-
+  console.log(mat);
   console.timeEnd("MTL parsing");
   console.log(".mtl read successful");
 }
