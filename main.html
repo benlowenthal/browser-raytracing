@@ -102,8 +102,10 @@
         </header>
 
         <div style="flex-direction: row">
-            <aside style="left: 0" id="matPanel">
+            <aside style="left: 0; overflow-y: auto">
                 <label>Scene:</label>
+                <span style="flex-direction: column; align-items: stretch" id="scenePanel"></span>
+                <span style="flex-direction: column; align-items: stretch" id="matPanel"></span>
             </aside>
 
             <aside style="right: 0" id="setPanel">

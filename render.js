@@ -1,5 +1,6 @@
 import { Vector3, dist, mul } from "./vector3.js";
-import { bvh, triIdx, buildBVH } from "./bvh.js";
+import { bvh, triIdx } from "./bvh.js";
+import { tlas, buildTLAS, registerObj, getMatrix } from "./tlas.js";
 import { vert, normal, uvs, tri, mat, tex, buildOBJ, readMTL, readTexture } from "./environment.js";
 
 const canvas = document.getElementById("canvas");
@@ -7,8 +8,6 @@ const context = canvas.getContext("webgpu");
 
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
-
-buildBVH();
 
 
 //WebGPU initialize
@@ -24,16 +23,15 @@ const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 context.configure({ device: device, format: canvasFormat });
 
 
+buildTLAS();
+registerObj(0, 8);
+
+
 //Fullscreen tri vertices
 const vertices = new Float32Array([
-  //tri 1
   -1, -1,
-  1, -1,
-  1, 1,
-  //tri 2
-  -1, -1,
-  1, 1,
-  -1, 1,
+  3, -1,
+  -1, 3
 ]);
 
 const vertexBufferLayout = {
@@ -70,10 +68,30 @@ var frame = device.createBuffer({
 });
 
 
+var tlasBuffer;
 var bvhBuffer;
 var sceneBuffer;
 var triBuffer;
 function writeBufferData() {
+  //TLAS buffer
+  const tlasData = new Float32Array(tlas.length * 24);
+  const tlasDataU = new Uint32Array(tlasData.buffer);
+  for (var n = 0; n < tlas.length; n++) {
+    tlasData.set([tlas[n].aabbMin.x, tlas[n].aabbMin.y, tlas[n].aabbMin.z], n * 24);
+    tlasDataU.set([tlas[n].offset], n * 24 + 3);
+    tlasData.set([tlas[n].aabbMax.x, tlas[n].aabbMax.y, tlas[n].aabbMax.z], n * 24 + 4);
+    tlasDataU.set([tlas[n].nodeCount], n * 24 + 7);
+    tlasData.set(getMatrix(n), n * 24 + 8);
+  }
+
+  tlasBuffer = device.createBuffer({
+    label: "TLAS Storage",
+    size: tlasData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(tlasBuffer, 0, tlasData);
+
+
   //BVH data buffers
   const bvhData = new Float32Array(bvh.length * 8);
   const bvhDataU = new Uint32Array(bvhData.buffer);
@@ -226,7 +244,6 @@ for (var n = 1; n < planetSettings.childElementCount; n++) {
     framesSinceChange = 0;
     settingsArray[idx] = parseFloat(input.value);
     device.queue.writeBuffer(settingsBuffer, 0, settingsArray);
-    console.log(settingsArray);
   });
   settingsArray[idx] = parseFloat(input.value);
 }
@@ -241,6 +258,7 @@ for (var n = 1; n < cloudSettings.childElementCount; n++) {
   settingsArray[idx] = parseFloat(input.value);
 }
 device.queue.writeBuffer(settingsBuffer, 0, settingsArray);
+
 
 //shader module
 const shaderModule = device.createShaderModule({
@@ -264,7 +282,8 @@ const bindGroupLayout = device.createBindGroupLayout({
     storageLayout(10),
     storageLayout(11),
     storageLayout(12),
-    uniformLayout(13),
+    storageLayout(13),
+    uniformLayout(14),
     { binding: 20, visibility: GPUShaderStage.COMPUTE, texture: { viewDimension: "2d-array" } },
     { binding: 21, visibility: GPUShaderStage.COMPUTE, sampler: {} }
   ]
@@ -282,10 +301,11 @@ function rebindGroup() {
       bindBuffer(2, cameraBuffer),
       bindBuffer(3, lightBuffer),
       bindBuffer(4, settingsBuffer),
-      bindBuffer(10, bvhBuffer),
-      bindBuffer(11, sceneBuffer),
-      bindBuffer(12, triBuffer),
-      bindBuffer(13, matBuffer),
+      bindBuffer(10, tlasBuffer),
+      bindBuffer(11, bvhBuffer),
+      bindBuffer(12, sceneBuffer),
+      bindBuffer(13, triBuffer),
+      bindBuffer(14, matBuffer),
       { binding: 20, resource: textures.createView() },
       { binding: 21, resource: sampler }
     ]
@@ -344,7 +364,7 @@ function draw() {
   renderPass.setPipeline(renderPipeline);
   renderPass.setVertexBuffer(0, vertexBuffer);
   renderPass.setBindGroup(0, bindGroup);
-  renderPass.draw(6); //3 per fullscreen tri
+  renderPass.draw(3); //3 per fullscreen tri
   renderPass.end();
 
   return encoder.finish();
@@ -440,10 +460,12 @@ importButton.addEventListener("click", async () => {
 
   for (const f of document.getElementById("input").files) if (f.name.endsWith(".obj")) {
     console.log(f);
-    await buildOBJ(f);
-    buildBVH();
+    let obj = await buildOBJ(f);
+    let idx = registerObj(obj.offset, obj.count);
+    tlas[idx].name = f.name;
   }
   writeBufferData();
+  createObjectPanel();
 
   //rebind buffers (size change)
   rebindGroup();
@@ -476,18 +498,54 @@ lightColor.addEventListener("change", () => {
 
 // ASIDE GENERATION
 
+function createObjectPanel() {
+  //Generate material panel
+  var panelHTML = "";
+  for (var n = 0; n < tlas.length; n++) {
+    panelHTML += `
+      <span style="flex-direction: column; align-items: stretch">
+      <label>${tlas[n].name}</label>
+      <span>
+        <label>Position:</label>
+        <input type="number" step="0.01" value="${tlas[n].pos.x}" id="${n}ps_x" onchange="onObjChange(${n}, '${n}ps_x', 'pos.x')" />
+        <input type="number" step="0.01" value="${tlas[n].pos.y}" id="${n}ps_y" onchange="onObjChange(${n}, '${n}ps_y', 'pos.y')" />
+        <input type="number" step="0.01" value="${tlas[n].pos.z}" id="${n}ps_z" onchange="onObjChange(${n}, '${n}ps_z', 'pos.z')" />
+      </span>
+      <span>
+        <label>Rotation:</label>
+        <input type="number" step="0.01" value="${tlas[n].rot.x}" id="${n}rt_x" onchange="onObjChange(${n}, '${n}rt_x', 'rot.x')" />
+        <input type="number" step="0.01" value="${tlas[n].rot.y}" id="${n}rt_y" onchange="onObjChange(${n}, '${n}rt_y', 'rot.y')" />
+        <input type="number" step="0.01" value="${tlas[n].rot.z}" id="${n}rt_z" onchange="onObjChange(${n}, '${n}rt_z', 'rot.z')" />
+      </span>
+      <span><label>Scale:</label><input type="number" min="0" max="1" step="0.01" value="${tlas[n].scale}" id="${n}sc" onchange="onObjChange(${n}, '${n}sc', 'scale')" /></span>
+      </span>
+    `;
+  }
+  document.getElementById("scenePanel").innerHTML = panelHTML;
+}
+createObjectPanel();
+
+function onObjChange(n, element, attr) {
+  framesSinceChange = 0;
+  let split = attr.split(".");
+  if (split.length == 1) tlas[n][attr] = parseFloat(document.getElementById(element).value);
+  else tlas[n][split[0]][split[1]] = parseFloat(document.getElementById(element).value);
+  device.queue.writeBuffer(tlasBuffer, (n * 24 + 8) * 4, new Float32Array(getMatrix(n)));
+}
+window.onObjChange = onObjChange;
+
 function createMaterialPanel() {
   //Generate material panel
-  var panelHTML = "<label>Scene:</label>";
+  var panelHTML = "";
   for (var n = 0; n < mat.length; n++) {
     panelHTML += `
       <span style="flex-direction: column; align-items: stretch">
-      <span><label>${mat[n].name}</label></span>
-      <span><label>Texture:</label><input type="number" min="0" max="${tex.length}" step="1" value="${mat[n].texture}" id="${n}t" onchange="onChange(${n}, '${n}t', 'texture')" /></span>
-      <span><label>Rough:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].rough}" id="${n}r" onchange="onChange(${n}, '${n}r', 'rough')" /></span>
-      <span><label>Gloss:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].gloss}" id="${n}g" onchange="onChange(${n}, '${n}g', 'gloss')" /></span>
-      <span><label>Transparency:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].transparency}" id="${n}tr" onchange="onChange(${n}, '${n}tr', 'transparency')" /></span>
-      <span><label>Refr Idx:</label><input type="number" min="0" max="5" step="0.01" value="${mat[n].rIdx}" id="${n}i" onchange="onChange(${n}, '${n}i', 'rIdx')" /></span>
+      <label>${mat[n].name}</label>
+      <span><label>Texture:</label><input type="number" min="0" max="${tex.length}" step="1" value="${mat[n].texture}" id="${n}tx" onchange="onMatChange(${n}, '${n}tx', 'texture')" /></span>
+      <span><label>Rough:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].rough}" id="${n}rg" onchange="onMatChange(${n}, '${n}rg', 'rough')" /></span>
+      <span><label>Gloss:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].gloss}" id="${n}gl" onchange="onMatChange(${n}, '${n}gl', 'gloss')" /></span>
+      <span><label>Transparency:</label><input type="number" min="0" max="1" step="0.01" value="${mat[n].transparency}" id="${n}tr" onchange="onMatChange(${n}, '${n}tr', 'transparency')" /></span>
+      <span><label>Refr Idx:</label><input type="number" min="0" max="5" step="0.01" value="${mat[n].rIdx}" id="${n}id" onchange="onMatChange(${n}, '${n}id', 'rIdx')" /></span>
       </span>
     `;
   }
@@ -495,19 +553,13 @@ function createMaterialPanel() {
 }
 createMaterialPanel();
 
-function onChange(m, element, attr) {
+function onMatChange(n, element, attr) {
   framesSinceChange = 0;
-  mat[m][attr] = document.getElementById(element).value;
-  writeMaterialData();
+  mat[n][attr] = document.getElementById(element).value;
+  device.queue.writeBuffer(matBuffer, n * 8 * 4, new Uint32Array([mat[n].texture]));
+  device.queue.writeBuffer(matBuffer, (n * 8 + 1) * 4, new Float32Array([mat[n].rough, mat[n].gloss, mat[n].transparency, mat[n].rIdx]));
 };
-window.onChange = onChange;
-
-function onSettingChange(m, element, attr) {
-  framesSinceChange = 0;
-  mat[m][attr] = document.getElementById(element).value;
-  writeMaterialData();
-};
-
+window.onMatChange = onMatChange;
 
 
 // RENDERING LOOP
@@ -542,6 +594,6 @@ while (true) {
   framesSinceChange++;
 
   fpsLabel.innerHTML = fpsText;
-  posLabel.innerHTML = Math.round(100 * pos.x) / 100 + ", " + Math.round(100 * pos.y) / 100 + ", " + Math.round(100 * pos.z) / 100;
-  rotLabel.innerHTML = Math.round(100 * rot.x) / 100 + ", " + Math.round(100 * rot.y) / 100 + ", " + Math.round(100 * rot.z) / 100;
+  posLabel.innerHTML = `${Math.round(100 * pos.x) / 100}, ${Math.round(100 * pos.y) / 100}, ${Math.round(100 * pos.z) / 100}`;
+  rotLabel.innerHTML = `${Math.round(100 * rot.x) / 100}, ${Math.round(100 * rot.y) / 100}, ${Math.round(100 * rot.z) / 100}`;
 }
